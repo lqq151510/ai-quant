@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zebao-quant-research"
+version = "0.1.0"
+description = "Isolated, paper-only A-share and ETF research"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "akshare>=1.20,<2",
+    "baostock>=0.8,<0.10",
+    "duckdb>=1.2,<3",
+    "numpy>=1.26,<3",
+    "pandas>=2.2,<4",
+    "pyarrow>=17,<30",
+]
+
+[project.optional-dependencies]
+models = ["arch>=7,<9", "lightgbm>=4.5,<5", "statsmodels>=0.14,<1", "networkx>=3,<4", "pydantic>=2,<3"]
+rl = ["gymnasium>=1.0,<2", "stable-baselines3>=2.5,<3"]
+
+[dependency-groups]
+dev = ["pytest>=8,<10"]
+
+[project.scripts]
+quant-research = "quant_research.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["quant_research*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

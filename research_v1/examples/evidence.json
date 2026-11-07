@@ -1,0 +1,42 @@
+{
+  "events": [
+    {
+      "event_id": "fixture-example-001",
+      "source_url": "https://example.org/engineering-fixture",
+      "channel": "news",
+      "category": "工程演示事件，非真实公告",
+      "entity_ids": ["entity:600000"],
+      "published_at": "2026-11-06T15:00:00+08:00",
+      "observed_at": "2026-11-06T15:10:00+08:00",
+      "ready_at": "2026-11-06T15:11:00+08:00",
+      "confidence": 0.5,
+      "sentiment": 0.2,
+      "heat": null
+    }
+  ],
+  "relations": [
+    {
+      "relation_id": "fixture-company-index",
+      "relation_type": "entity_index",
+      "source_id": "entity:600000",
+      "target_id": "index:000300",
+      "source_url": "https://example.org/engineering-fixture",
+      "valid_from": "2026-11-01T00:00:00+08:00",
+      "known_at": "2026-11-01T00:00:00+08:00",
+      "confidence": 0.5,
+      "weight": null
+    },
+    {
+      "relation_id": "fixture-index-etf",
+      "relation_type": "index_etf",
+      "source_id": "index:000300",
+      "target_id": "etf:510300",
+      "source_url": "https://example.org/engineering-fixture",
+      "valid_from": "2026-11-01T00:00:00+08:00",
+      "known_at": "2026-11-01T00:00:00+08:00",
+      "confidence": 0.5,
+      "weight": null
+    }
+  ],
+  "coverage": []
+}
