@@ -44,6 +44,17 @@ class QuantDuckDBStorage:
                     PRIMARY KEY (src_symbol, dst_symbol, relation_type)
                 );
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS market_news (
+                    symbol VARCHAR,
+                    pub_time VARCHAR,
+                    title VARCHAR,
+                    content VARCHAR,
+                    source VARCHAR,
+                    sentiment_score DOUBLE,
+                    PRIMARY KEY (symbol, title)
+                );
+            """)
 
     def save_daily_bars(self, df: pd.DataFrame) -> int:
         """幂等写入或更新日线行情数据."""
@@ -103,3 +114,30 @@ class QuantDuckDBStorage:
         """加载知识图谱静态与动态关系边."""
         with self._connect() as conn:
             return conn.execute("SELECT * FROM kg_edges").df()
+
+    def replace_all_daily_bars(self, df: pd.DataFrame) -> int:
+        """清空旧行情并写入最新全量真实行情表."""
+        with self._connect() as conn:
+            conn.execute("DELETE FROM daily_bars")
+        return self.save_daily_bars(df)
+
+    def save_market_news(self, news_df: pd.DataFrame) -> int:
+        """保存个股/ETF 最新财经新闻及情绪打分."""
+        if news_df.empty:
+            return 0
+        cols = ["symbol", "pub_time", "title", "content", "source", "sentiment_score"]
+        clean = news_df[cols].drop_duplicates(subset=["symbol", "title"]).copy()
+        with self._connect() as conn:
+            conn.register("tmp_news", clean)
+            conn.execute("""
+                INSERT OR REPLACE INTO market_news
+                SELECT symbol, pub_time, title, content, source, sentiment_score
+                FROM tmp_news
+            """)
+            conn.unregister("tmp_news")
+        return len(clean)
+
+    def load_market_news(self) -> pd.DataFrame:
+        """加载本地存储的财经新闻."""
+        with self._connect() as conn:
+            return conn.execute("SELECT * FROM market_news ORDER BY pub_time DESC").df()

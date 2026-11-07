@@ -29,7 +29,11 @@ class ASharePortfolioEnv(gym.Env):
     ) -> None:
         super().__init__()
         assert len(alpha_preds) == len(real_next_rets)
-        self.alpha_preds = alpha_preds.astype(np.float32)
+        # 对齐 3 日预测周期做 EMA 信号平滑，消除单日高频噪音导致的无效换手
+        smoothed = np.zeros_like(alpha_preds, dtype=np.float32)
+        for t in range(len(alpha_preds)):
+            smoothed[t] = 0.5 * smoothed[t - 1] + 0.5 * alpha_preds[t] if t > 0 else alpha_preds[t]
+        self.alpha_preds = smoothed
         self.vol_features = vol_features.astype(np.float32)
         self.real_next_rets = real_next_rets.astype(np.float32)
 
@@ -83,14 +87,22 @@ class ASharePortfolioEnv(gym.Env):
         raw_target_w = raw_alloc[:self.n_assets]
         raw_target_cash = float(raw_alloc[-1])
 
-        # A股 T+1 与波段持仓惯性约束 (Inertia = 0.65 降低无效日内高频换手摩擦)
-        if np.sum(self.weights) > 1e-5:
-            inertia = 0.65
-            target_w = inertia * self.weights + (1.0 - inertia) * raw_target_w
-            target_cash = max(0.0, 1.0 - float(np.sum(target_w)))
+        # 对齐 3 日波段调仓周期：每 3 个交易日根据 Top-3 分散化 + PPO 风险敞口控制调仓
+        if self.step_idx % 3 == 0 or np.sum(self.weights) < 1e-5:
+            top_idx = np.argsort(self.alpha_preds[self.step_idx])[-3:]
+            top_mask = np.zeros(self.n_assets, dtype=np.float32)
+            # 保持 Top-3 核心分散化基底，叠加 PPO 微调倾角，防止单票过度集中
+            tilt = 1.0 + 0.15 * np.tanh(logits[top_idx])
+            top_mask[top_idx] = tilt / np.sum(tilt)
+            # PPO 动态控制总权益仓位敞口与现金防守比例
+            current_dd = (self.peak_nav - self.nav) / max(self.peak_nav, 1e-8)
+            base_cash = float(np.clip(raw_target_cash + 0.65 * current_dd, 0.12, 0.45))
+            equity_exposure = 1.0 - base_cash
+            target_w = top_mask * equity_exposure
+            target_cash = base_cash
         else:
-            target_w = raw_target_w
-            target_cash = raw_target_cash
+            target_w = self.weights.copy()
+            target_cash = self.cash_weight
 
         # 计算换手与 A 股非对称买卖摩擦成本
         delta_w = target_w - self.weights

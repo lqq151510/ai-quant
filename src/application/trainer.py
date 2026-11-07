@@ -10,7 +10,18 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from src.domain.features.pipeline import SpatioTemporalDataset
 from src.domain.rl_portfolio.a_share_env import ASharePortfolioEnv
-from src.domain.timeseries_dl.losses import CrossSectionalICLoss
+from src.domain.rl_portfolio.offline_iql import (
+    evaluate_hrp_hmm_iql_portfolio,
+    train_offline_iql_agent,
+)
+from src.domain.rl_portfolio.ppo_agent import (
+    evaluate_ppo_agent,
+    train_ppo_portfolio_agent,
+)
+from src.domain.timeseries_dl.losses import (
+    CrossSectionalICLoss,
+    build_exponential_time_decay_weights,
+)
 
 
 @dataclass
@@ -218,78 +229,25 @@ def train_and_eval_rl_portfolio(
     train_ds: SpatioTemporalDataset,
     test_alpha: np.ndarray,
     test_ds: SpatioTemporalDataset,
-    episodes: int = 45,
-) -> QuantEvalMetrics:
-    """在训练集 Gym 环境上训练 RL 仓位控制智能体，并在样本外测试集上评估回撤控制能力."""
-    # 提取第 5 维特征 (volatility_10d) 作为风险感知输入
+    episodes: int = 35,
+) -> Tuple[QuantEvalMetrics, Dict[str, np.ndarray | float]]:
+    """在训练集 Gym 环境上使用完整 PPO + GAE 训练仓位控制智能体，并在样本外测试集评估."""
     train_vol = train_ds.x_seq[:, :, -1, 5]
     test_vol = test_ds.x_seq[:, :, -1, 5]
 
     train_env = ASharePortfolioEnv(train_alpha, train_vol, train_ds.y_raw_ret)
     test_env = ASharePortfolioEnv(test_alpha, test_vol, test_ds.y_raw_ret)
 
-    obs_dim = train_env.observation_space.shape[0]
-    act_dim = train_env.action_space.shape[0]
-    agent = PolicyGradientPortfolioAgent(obs_dim, act_dim)
-    optimizer = torch.optim.AdamW(agent.parameters(), lr=2e-3, weight_decay=1e-4)
+    ppo_model = train_ppo_portfolio_agent(
+        train_env=train_env,
+        rollout_episodes=episodes,
+        ppo_epochs=4,
+        clip_eps=0.20,
+    )
+    eval_res = evaluate_ppo_agent(ppo_model, test_env)
 
-    for _ in range(episodes):
-        obs, _ = train_env.reset()
-        log_probs, values, rewards = [], [], []
-        done = False
-        while not done:
-            obs_t = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
-            mean, val = agent(obs_t)
-            alpha_prior = _build_rl_alpha_prior(obs, train_env.n_assets)
-            dist = torch.distributions.Normal(mean * 0.4 + alpha_prior, torch.exp(agent.actor_log_std))
-            action = dist.sample()
-            log_prob = dist.log_prob(action).sum(dim=-1)
-
-            next_obs, reward, done, _, _ = train_env.step(action.squeeze(0).detach().numpy())
-            log_probs.append(log_prob)
-            values.append(val.squeeze())
-            rewards.append(reward)
-            obs = next_obs
-
-        # 计算折扣回报与 Advantage (A2C 更新)
-        returns = []
-        g = 0.0
-        for r in reversed(rewards):
-            g = r + 0.97 * g
-            returns.insert(0, g)
-        ret_t = torch.tensor(returns, dtype=torch.float32)
-        ret_t = (ret_t - ret_t.mean()) / (ret_t.std() + 1e-6)
-        val_t = torch.stack(values)
-        logp_t = torch.stack(log_probs)
-
-        advantage = ret_t - val_t.detach()
-        actor_loss = -(logp_t * advantage).mean()
-        critic_loss = nn.SmoothL1Loss()(val_t, ret_t)
-        loss = actor_loss + 0.5 * critic_loss
-
-        optimizer.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(agent.parameters(), 1.0)
-        optimizer.step()
-
-    # 样本外测试集确定性推理
-    agent.eval()
-    obs, _ = test_env.reset()
-    done = False
-    net_rets, bench_rets, cash_weights = [], [], []
-    while not done:
-        with torch.no_grad():
-            obs_t = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
-            mean, _ = agent(obs_t)
-            alpha_prior = _build_rl_alpha_prior(obs, test_env.n_assets)
-            act = (mean * 0.4 + alpha_prior).squeeze(0).numpy()
-        obs, _, done, _, info = test_env.step(act)
-        net_rets.append(info["net_ret"])
-        bench_rets.append(info["bench_ret"])
-        cash_weights.append(info["cash_weight"])
-
-    port_arr = np.array(net_rets)
-    bench_arr = np.array(bench_rets)
+    port_arr = eval_res["net_rets"]
+    bench_arr = eval_res["bench_rets"]
     n_days = len(port_arr)
     ann_ret = float((np.prod(1.0 + port_arr) ** (252.0 / max(n_days, 1))) - 1.0)
     bench_ann = float((np.prod(1.0 + bench_arr) ** (252.0 / max(n_days, 1))) - 1.0)
@@ -299,6 +257,27 @@ def train_and_eval_rl_portfolio(
     mdd = float(np.max((peak - nav) / peak))
     ic_mean, rank_ic, icir = compute_ic_metrics(test_alpha, test_ds.y_alpha)
 
+    metrics = QuantEvalMetrics(
+        ic_mean=ic_mean,
+        rank_ic_mean=rank_ic,
+        icir=icir,
+        annual_return=ann_ret,
+        bench_annual_return=bench_ann,
+        sharpe_ratio=sharpe,
+        max_drawdown=mdd,
+        avg_cash_weight=float(eval_res["avg_cash_weight"]),
+    )
+    return metrics, eval_res
+
+
+def evaluate_predictions_direct(
+    test_preds: np.ndarray,
+    test_ds: SpatioTemporalDataset,
+    top_k: int = 3,
+) -> QuantEvalMetrics:
+    """对集成/校准后的截面预测矩阵直接计算 IC、RankIC、ICIR 与 Top-K 轮动回测指标."""
+    ic_mean, rank_ic, icir = compute_ic_metrics(test_preds, test_ds.y_alpha)
+    ann_ret, bench_ann, sharpe, mdd = backtest_top_k(test_preds, test_ds.y_raw_ret, top_k=top_k)
     return QuantEvalMetrics(
         ic_mean=ic_mean,
         rank_ic_mean=rank_ic,
@@ -307,5 +286,52 @@ def train_and_eval_rl_portfolio(
         bench_annual_return=bench_ann,
         sharpe_ratio=sharpe,
         max_drawdown=mdd,
-        avg_cash_weight=float(np.mean(cash_weights)),
     )
+
+
+def train_and_eval_iql_hrp_hmm(
+    train_alpha: np.ndarray,
+    train_ds: SpatioTemporalDataset,
+    test_alpha: np.ndarray,
+    uncertainty_width: np.ndarray,
+    test_ds: SpatioTemporalDataset,
+    hmm_max_exposures: list[float],
+) -> Tuple[QuantEvalMetrics, Dict[str, np.ndarray | float]]:
+    """训练 Offline IQL 智能体，并结合 HRP 层次风险平价与 HMM 市场状态门控在测试集评估."""
+    train_vol = train_ds.x_seq[:, :, -1, 5]
+    test_vol = test_ds.x_seq[:, :, -1, 5]
+
+    train_env = ASharePortfolioEnv(train_alpha, train_vol, train_ds.y_raw_ret)
+    iql_model = train_offline_iql_agent(train_env=train_env, n_behavior_episodes=18, iql_epochs=40)
+
+    eval_res = evaluate_hrp_hmm_iql_portfolio(
+        iql_model=iql_model,
+        test_alpha=test_alpha,
+        uncertainty_width=uncertainty_width,
+        train_raw_rets=train_ds.y_raw_ret,
+        test_raw_rets=test_ds.y_raw_ret,
+        test_vol_features=test_vol,
+        hmm_max_exposures=hmm_max_exposures,
+    )
+    port_arr = eval_res["net_rets"]
+    bench_arr = eval_res["bench_rets"]
+    n_days = len(port_arr)
+    ann_ret = float((np.prod(1.0 + port_arr) ** (252.0 / max(n_days, 1))) - 1.0)
+    bench_ann = float((np.prod(1.0 + bench_arr) ** (252.0 / max(n_days, 1))) - 1.0)
+    sharpe = float(np.mean(port_arr) / (np.std(port_arr) + 1e-8) * np.sqrt(252.0))
+    nav = np.cumprod(1.0 + port_arr)
+    peak = np.maximum.accumulate(nav)
+    mdd = float(np.max((peak - nav) / peak))
+    ic_mean, rank_ic, icir = compute_ic_metrics(test_alpha, test_ds.y_alpha)
+
+    metrics = QuantEvalMetrics(
+        ic_mean=ic_mean,
+        rank_ic_mean=rank_ic,
+        icir=icir,
+        annual_return=ann_ret,
+        bench_annual_return=bench_ann,
+        sharpe_ratio=sharpe,
+        max_drawdown=mdd,
+        avg_cash_weight=float(eval_res["avg_cash_weight"]),
+    )
+    return metrics, eval_res

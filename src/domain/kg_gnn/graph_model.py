@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from src.domain.timeseries_dl.models import FinancialPatchTSTEncoder
+from src.domain.timeseries_dl.models import FinancialPatchTSTEncoder, FinancialiTransformer
 
 
 def build_hybrid_kg_adjacency(
@@ -72,8 +72,8 @@ class PriorGuidedStockGATLayer(nn.Module):
         self.w_v = nn.Linear(d_model, d_model, bias=False)
 
         # 知识图谱先验强度缩放因子与小初值残差系数 (ReZero 思想)
-        self.prior_scale = nn.Parameter(torch.ones(1, n_heads, 1, 1) * 2.0)
-        self.res_scale = nn.Parameter(torch.tensor(0.20))
+        self.prior_scale = nn.Parameter(torch.ones(1, n_heads, 1, 1) * 2.5)
+        self.res_scale = nn.Parameter(torch.tensor(0.12))
         self.gate_layer = nn.Sequential(
             nn.Linear(d_model * 2, d_model),
             nn.Sigmoid(),
@@ -93,18 +93,17 @@ class PriorGuidedStockGATLayer(nn.Module):
         k = self.w_k(h).view(b_days, n_assets, self.n_heads, self.head_dim).transpose(1, 2)
         v = self.w_v(h).view(b_days, n_assets, self.n_heads, self.head_dim).transpose(1, 2)
 
-        # 计算注意力分数并注入知识图谱拓扑偏置: (B, H, N_dst, N_src)
+        # 计算注意力分数并注入知识图谱拓扑软偏置 (Graphormer 风格):
+        # 既强化同产业链/同板块邻居的动量溢出，又保留跨板块 (如科技 vs 红利/黄金) 的全局资金跷跷板感知
         attn_logits = torch.matmul(q, k.transpose(-2, -1)) / (self.head_dim ** 0.5)
         prior_bias = adj_prior.unsqueeze(0).unsqueeze(0) * self.prior_scale
         attn_logits = attn_logits + prior_bias
 
-        # 仅保留存在知识图谱关联或强领先滞后关系的外部邻居
-        has_neighbors = (adj_prior >= 0.05).any(dim=-1, keepdim=True)
-        mask = (adj_prior < 0.05).unsqueeze(0).unsqueeze(0)
-        attn_logits = attn_logits.masked_fill(mask, -1e4)
+        # 仅屏蔽自环 (i == j)，迫使图注意力层专注提取外部标的的截面传导与轮动信号
+        eye_mask = torch.eye(n_assets, device=h.device, dtype=torch.bool).unsqueeze(0).unsqueeze(0)
+        attn_logits = attn_logits.masked_fill(eye_mask, -1e4)
 
         attn_weights = F.softmax(attn_logits, dim=-1)
-        attn_weights = attn_weights * has_neighbors.unsqueeze(0).unsqueeze(0).float()
         attn_weights = self.dropout(attn_weights)
 
         # 聚合外部邻居溢出特征
@@ -118,7 +117,10 @@ class PriorGuidedStockGATLayer(nn.Module):
 
 
 class SpatioTemporalKGAlphaModel(nn.Module):
-    """Stage 2 时空图神经网络 (PatchTST 时序编码 + 知识图谱 GAT 空间传导)."""
+    """Stage 2 时空知识图谱网络 (iTransformer 跨指标时序编码 + PatchTST + 动态知识图谱拓扑传导).
+
+    融合 iTransformer 跨变量耦合表征与显式知识图谱产业链/跨市场映射边 (norm_adj) 消息传递。
+    """
 
     def __init__(
         self,
@@ -127,24 +129,42 @@ class SpatioTemporalKGAlphaModel(nn.Module):
         seq_len: int = 20,
         d_model: int = 64,
         n_heads: int = 4,
+        dropout: float = 0.2,
     ) -> None:
         super().__init__()
-        self.register_buffer("adj_prior", adj_prior)
+        row_sum = adj_prior.sum(dim=-1, keepdim=True).clamp(min=1e-6)
+        norm_adj = adj_prior / row_sum
+        self.register_buffer("norm_adj", norm_adj)
+
+        self.itrans_branch = FinancialiTransformer(
+            in_features=in_features,
+            seq_len=seq_len,
+            d_model=d_model,
+            n_heads=n_heads,
+            dropout=dropout,
+        )
         self.temporal_encoder = FinancialPatchTSTEncoder(
             in_features=in_features,
             seq_len=seq_len,
             d_model=d_model,
             n_heads=n_heads,
+            dropout=dropout,
         )
-        self.gat = PriorGuidedStockGATLayer(d_model=d_model, n_heads=n_heads)
-        self.head = nn.Sequential(
+        self.kg_proj = nn.Sequential(
             nn.Linear(d_model, d_model // 2),
             nn.GELU(),
             nn.Linear(d_model // 2, 1),
         )
+        self.kg_scale = nn.Parameter(torch.tensor(0.22))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """输入 (B, N, L, F) -> 输出时空融合截面 Alpha 分数 (B, N)."""
-        h_temp = self.temporal_encoder(x)
-        h_st = self.gat(h_temp, self.adj_prior)
-        return self.head(h_st).squeeze(-1)
+        with torch.no_grad():
+            self.itrans_branch.eval()
+            self.temporal_encoder.eval()
+            base_alpha = self.itrans_branch(x)  # (B, N)
+            h_intra = self.temporal_encoder(x)  # (B, N, d_model)
+        # 沿动态知识图谱 (含纳指跨市场映射边与产业链边) 聚合邻居特征
+        h_kg = torch.matmul(self.norm_adj.unsqueeze(0), h_intra)
+        kg_alpha = self.kg_proj(h_kg).squeeze(-1)
+        return base_alpha + self.kg_scale * kg_alpha

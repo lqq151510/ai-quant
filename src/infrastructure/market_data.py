@@ -32,18 +32,25 @@ CORE_UNIVERSE: List[AssetMeta] = [
     AssetMeta("600900", "长江电力", "Dividend_Value", is_leader=False),
     AssetMeta("510300", "沪深300ETF", "Broad_Index", is_leader=True),
     AssetMeta("518880", "黄金ETF", "Macro_Hedge", is_leader=True),
+    # 跨市场全球科技锚点 (纳斯达克100：映射英伟达/费半/海外AI资本开支冲击)
+    AssetMeta("513100", "纳指ETF", "Global_Tech_Anchor", is_leader=True),
 ]
 
 # 显式知识图谱先验关系：(源节点, 目标节点, 关系类型, 先验权重)
-# 包含：同行业共振 (same_sector)、产业链上下游传导 (supply_chain)、宏观风格跷跷板/协同 (style_link)
+# 包含：跨市场海外算力映射 (overseas_ai_chain)、同行业共振 (same_sector)、产业链传导 (supply_chain)、避险跷跷板 (risk_off_hedge)
 PRIOR_KG_RELATIONS: List[Tuple[str, str, str, float]] = [
+    ("513100", "300308", "overseas_nvda_chain", 0.95),  # 纳指/英伟达 Capex -> 光模块核心映射
+    ("513100", "515880", "overseas_ai_capex", 0.90),    # 纳指/海外算力 -> 通信设备ETF
+    ("513100", "512480", "overseas_sox_link", 0.78),    # 费城半导体 -> A股半导体ETF
+    ("513100", "600900", "risk_off_hedge", 0.70),       # 海外科技暴跌 -> 高股息水电避险跷跷板
+    ("513100", "510880", "risk_off_hedge", 0.70),       # 海外科技暴跌 -> 红利低波避险跷跷板
     ("512480", "688981", "same_sector", 0.90),
-    ("688981", "002371", "supply_chain", 0.85),   # 晶圆代工龙头 -> 半导体设备补涨
+    ("688981", "002371", "supply_chain", 0.85),         # 晶圆代工龙头 -> 国产半导体设备(内需自主可控)
     ("512480", "002371", "same_sector", 0.80),
     ("515880", "300308", "same_sector", 0.90),
-    ("512480", "515880", "tech_theme", 0.75),    # 算力与半导体硬科技联动
+    ("512480", "515880", "tech_theme", 0.75),
     ("688981", "300308", "tech_theme", 0.70),
-    ("300750", "002594", "supply_chain", 0.85),  # 动力电池龙头 -> 整车终端
+    ("300750", "002594", "supply_chain", 0.85),
     ("300750", "515790", "same_sector", 0.70),
     ("510880", "600900", "same_sector", 0.90),
     ("510300", "510880", "style_link", 0.65),
@@ -90,59 +97,170 @@ def fetch_or_generate_market_data(
     return generate_realistic_ashare_panel(n_days=n_days, seed=seed)
 
 
+def _apply_split_qfq_adjustment(sub: pd.DataFrame) -> pd.DataFrame:
+    """修复 ETF 份额拆分/折算导致的未复权断崖跳空，保持最新盘面价格与真实收盘一致."""
+    df = sub.sort_values("trade_date").reset_index(drop=True).copy()
+    symbol = str(df["symbol"].iloc[0])
+    gap_limit = 0.21 if symbol.startswith(("30", "68")) else 0.11
+
+    closes = df["close"].to_numpy(dtype=np.float64)
+    opens = df["open"].to_numpy(dtype=np.float64)
+    highs = df["high"].to_numpy(dtype=np.float64)
+    lows = df["low"].to_numpy(dtype=np.float64)
+
+    # 从后往前累积前复权因子，使得最新一天的价格等于真实盘面价格，且历史拆分日无断崖跳空
+    adj_factor = np.ones(len(df), dtype=np.float64)
+    cum_factor = 1.0
+    for t in range(len(df) - 1, 0, -1):
+        raw_ret = closes[t] / max(closes[t - 1], 1e-8) - 1.0
+        if abs(raw_ret) > gap_limit:
+            # 发生份额拆分或大比例除权：用当日开盘相对前收的比例作为拆分折算因子
+            split_ratio = opens[t] / max(closes[t - 1], 1e-8)
+            cum_factor *= split_ratio
+        adj_factor[t - 1] = cum_factor
+
+    df["open"] = np.round(opens * adj_factor, 4)
+    df["high"] = np.round(highs * adj_factor, 4)
+    df["low"] = np.round(lows * adj_factor, 4)
+    df["close"] = np.round(closes * adj_factor, 4)
+    return df
+
+
 def _fetch_from_akshare(n_days: int = 750) -> pd.DataFrame:
-    """使用 AkShare 拉取场内 ETF 与个股前复权日线."""
+    """使用 AkShare (新浪/东财双通道) 拉取 12 只核心场内 ETF 与个股近 3 年真实前复权日线."""
     import akshare as ak
 
     end_dt = pd.Timestamp.today().strftime("%Y%m%d")
-    start_dt = (pd.Timestamp.today() - pd.Timedelta(days=int(n_days * 1.6))).strftime("%Y%m%d")
+    start_dt = (pd.Timestamp.today() - pd.Timedelta(days=int(n_days * 1.65))).strftime("%Y%m%d")
+    start_ts = pd.to_datetime(start_dt)
     frames = []
+
     for asset in CORE_UNIVERSE:
+        sub = None
+        is_etf = asset.symbol.startswith(("51", "15"))
+        prefix = "sh" if asset.symbol.startswith(("5", "6")) else "sz"
+
+        # 通道 1: 新浪高速历史行情接口 (对 ETF 和 A股前复权最稳定)
         try:
-            if asset.symbol.startswith(("51", "15")):
-                raw = ak.fund_etf_hist_em(
-                    symbol=asset.symbol,
-                    period="daily",
-                    start_date=start_dt,
-                    end_date=end_dt,
-                    adjust="qfq",
-                )
+            if is_etf:
+                raw = ak.fund_etf_hist_sina(symbol=f"{prefix}{asset.symbol}")
+                if raw is not None and not raw.empty:
+                    raw["date"] = pd.to_datetime(raw["date"])
+                    raw = raw[raw["date"] >= start_ts]
+                    sub = pd.DataFrame({
+                        "symbol": asset.symbol,
+                        "name": asset.name,
+                        "sector": asset.sector,
+                        "trade_date": raw["date"],
+                        "open": raw["open"].astype(float),
+                        "high": raw["high"].astype(float),
+                        "low": raw["low"].astype(float),
+                        "close": raw["close"].astype(float),
+                        "volume": raw["volume"].astype(float),
+                        "amount": raw["amount"].astype(float),
+                    })
             else:
-                raw = ak.stock_zh_a_hist(
-                    symbol=asset.symbol,
-                    period="daily",
+                raw = ak.stock_zh_a_daily(
+                    symbol=f"{prefix}{asset.symbol}",
                     start_date=start_dt,
                     end_date=end_dt,
                     adjust="qfq",
                 )
-            if raw is None or raw.empty:
-                continue
-            sub = pd.DataFrame({
-                "symbol": asset.symbol,
-                "name": asset.name,
-                "sector": asset.sector,
-                "trade_date": pd.to_datetime(raw["日期"]),
-                "open": raw["开盘"].astype(float),
-                "high": raw["最高"].astype(float),
-                "low": raw["最低"].astype(float),
-                "close": raw["收盘"].astype(float),
-                "volume": raw["成交量"].astype(float),
-                "amount": raw["成交额"].astype(float),
-            })
-            frames.append(sub)
+                if raw is not None and not raw.empty:
+                    sub = pd.DataFrame({
+                        "symbol": asset.symbol,
+                        "name": asset.name,
+                        "sector": asset.sector,
+                        "trade_date": pd.to_datetime(raw["date"]),
+                        "open": raw["open"].astype(float),
+                        "high": raw["high"].astype(float),
+                        "low": raw["low"].astype(float),
+                        "close": raw["close"].astype(float),
+                        "volume": raw["volume"].astype(float),
+                        "amount": raw["amount"].astype(float),
+                    })
         except Exception:
-            continue
+            sub = None
+
+        # 通道 2: 东方财富备用接口
+        if sub is None or sub.empty:
+            try:
+                if is_etf:
+                    raw = ak.fund_etf_hist_em(
+                        symbol=asset.symbol,
+                        period="daily",
+                        start_date=start_dt,
+                        end_date=end_dt,
+                        adjust="qfq",
+                    )
+                else:
+                    raw = ak.stock_zh_a_hist(
+                        symbol=asset.symbol,
+                        period="daily",
+                        start_date=start_dt,
+                        end_date=end_dt,
+                        adjust="qfq",
+                    )
+                if raw is not None and not raw.empty:
+                    sub = pd.DataFrame({
+                        "symbol": asset.symbol,
+                        "name": asset.name,
+                        "sector": asset.sector,
+                        "trade_date": pd.to_datetime(raw["日期"]),
+                        "open": raw["开盘"].astype(float),
+                        "high": raw["最高"].astype(float),
+                        "low": raw["最低"].astype(float),
+                        "close": raw["收盘"].astype(float),
+                        "volume": raw["成交量"].astype(float),
+                        "amount": raw["成交额"].astype(float),
+                    })
+            except Exception:
+                sub = None
+
+        if sub is not None and not sub.empty:
+            frames.append(_apply_split_qfq_adjustment(sub))
+
     if not frames:
         return pd.DataFrame()
     full_df = pd.concat(frames, ignore_index=True)
-    # 对齐共同交易日
     common_dates = (
         full_df.groupby("trade_date")["symbol"]
         .nunique()
         .loc[lambda s: s == len(frames)]
-        .index
+        .index.sort_values()
     )
-    return full_df[full_df["trade_date"].isin(common_dates)].sort_values(["trade_date", "symbol"]).reset_index(drop=True)
+    if len(common_dates) > n_days:
+        common_dates = common_dates[-n_days:]
+    return (
+        full_df[full_df["trade_date"].isin(common_dates)]
+        .sort_values(["trade_date", "symbol"])
+        .reset_index(drop=True)
+    )
+
+
+def fetch_latest_eastmoney_news(top_per_asset: int = 4) -> pd.DataFrame:
+    """从东方财富 (ak.stock_news_em) 抓取标的池最新个股/行业新闻快讯."""
+    import akshare as ak
+
+    news_rows = []
+    for asset in CORE_UNIVERSE:
+        try:
+            raw = ak.stock_news_em(symbol=asset.symbol)
+            if raw is None or raw.empty:
+                continue
+            for _, row in raw.head(top_per_asset).iterrows():
+                news_rows.append({
+                    "symbol": asset.symbol,
+                    "name": asset.name,
+                    "sector": asset.sector,
+                    "pub_time": str(row.get("发布时间", "")),
+                    "title": str(row.get("新闻标题", "")),
+                    "content": str(row.get("新闻内容", ""))[:300],
+                    "source": str(row.get("文章来源", "东方财富")),
+                })
+        except Exception:
+            continue
+    return pd.DataFrame(news_rows)
 
 
 def generate_realistic_ashare_panel(n_days: int = 750, seed: int = 42) -> pd.DataFrame:
