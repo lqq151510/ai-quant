@@ -35,6 +35,7 @@ def main(argv: list[str] | None = None) -> int:
     prepare = commands.add_parser("prepare-etf", help="normalize captured tables, keeping unverified evidence blocked")
     prepare.add_argument("--probe", type=Path, required=True)
     prepare.add_argument("--calendar", type=Path, required=True)
+    prepare.add_argument("--bulk", type=Path, default=None, help="cross-checked multi-source bulk evidence directory")
     prepare.add_argument("--out", type=Path, required=True)
     prepare.add_argument("--start", type=date.fromisoformat, default=RESEARCH_START)
     prepare.add_argument("--end", type=date.fromisoformat, required=True)
@@ -61,7 +62,13 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "prepare-etf":
             from .prepare import prepare_etf_snapshot
 
-            manifest = prepare_etf_snapshot(args.probe, args.calendar, args.out, ResearchPeriod(args.start, args.end))
+            manifest = prepare_etf_snapshot(
+                args.probe,
+                args.calendar,
+                args.out,
+                ResearchPeriod(args.start, args.end),
+                bulk_dir=args.bulk,
+            )
             emit({"origin": manifest["origin"], "coverage": manifest["coverage"], "snapshot": str(args.out.resolve())})
             return 0
 

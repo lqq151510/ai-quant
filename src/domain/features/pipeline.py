@@ -18,9 +18,12 @@ FEATURE_COLUMNS: List[str] = [
 ]
 
 MICRO_FEATURE_COLUMNS: List[str] = [
-    "cmf_20d",        # 数据升级1A: 20日主力资金流承接强度 (Chaikin Smart Money Flow = CLV * 相对量比)
-    "asym_semi_20d",  # 数据升级1B: 20日上下行已实现半方差不对称性 (Realized Semivariance Asymmetry)
-    "smart_flow_1d",  # 数据升级1C: 当日日内尾盘主力资金承接强度 (CLV * 相对量比)
+    "cmf_20d",          # 数据升级1A: 20日主力资金流承接强度 (Chaikin Smart Money Flow = CLV * 相对量比)
+    "asym_semi_20d",    # 数据升级1B: 20日上下行已实现半方差不对称性 (Realized Semivariance Asymmetry)
+    "smart_flow_1d",    # 数据升级1C: 当日日内尾盘主力资金承接强度 (CLV * 相对量比)
+    "overnight_ret_5d", # 数据升级1D: 5日隔夜跳空累计动量 (A股 T+1 集合竞价知情资金方向)
+    "intraday_ret_5d",  # 数据升级1E: 5日日内实体累计动量 (A股日内交易追涨/承接力度)
+    "idio_mom_20d",     # 数据升级1F: 20日截面市场残差特异动量 (剥离市场Beta后的纯Alpha动量)
 ]
 
 
@@ -99,22 +102,34 @@ def _mean_offdiag_corr(feat_cube: np.ndarray) -> float:
 
 
 def compute_raw_feature_columns(bars_df: pd.DataFrame) -> pd.DataFrame:
-    """按单标的严格沿历史时间轴计算 10 维量价、风险调整动量与主力资金流/微结构特征 (零未来函数)."""
+    """按单标的严格沿历史时间轴计算因果除权量价、隔夜/日内微结构与截面残差特异动量特征 (零未来函数)."""
     df = bars_df.sort_values(["symbol", "trade_date"]).copy()
     g = df.groupby("symbol", group_keys=False)
-    df["ret_1d_raw"] = g["close"].pct_change(1)
-    df["ret_3d"] = g["close"].pct_change(3)
-    df["ret_5d"] = g["close"].pct_change(5)
-    df["ret_10d"] = g["close"].pct_change(10)
-    df["ret_20d"] = g["close"].pct_change(20)
+
+    # 若含交易所 preclose，使用 close / preclose 构造 100% 因果链式真实收益与复权价格序列，消除分红/份额折算伪跳变
+    if "preclose" in df.columns and (df["preclose"] > 0).all():
+        df["ret_1d_raw"] = (df["close"] / df["preclose"]) - 1.0
+        # 严格仅累乘历史日真实收益率 (零未来函数)
+        df["_causal_adj_price"] = g["ret_1d_raw"].transform(lambda s: (1.0 + s.fillna(0.0)).cumprod())
+        price_col = "_causal_adj_price"
+        df["_overnight_1d"] = (df["open"] / df["preclose"]) - 1.0
+    else:
+        df["ret_1d_raw"] = g["close"].pct_change(1)
+        price_col = "close"
+        df["_overnight_1d"] = (df["open"] / g["close"].shift(1)) - 1.0
+
+    df["ret_3d"] = g[price_col].pct_change(3)
+    df["ret_5d"] = g[price_col].pct_change(5)
+    df["ret_10d"] = g[price_col].pct_change(10)
+    df["ret_20d"] = g[price_col].pct_change(20)
 
     vol_10 = g["ret_1d_raw"].transform(lambda s: s.rolling(10, min_periods=5).std()) + 1e-6
     vol_20 = g["ret_1d_raw"].transform(lambda s: s.rolling(20, min_periods=10).std()) + 1e-6
     df["sharpe_10d"] = df["ret_10d"] / vol_10
     df["sharpe_20d"] = df["ret_20d"] / vol_20
 
-    ma_20 = g["close"].transform(lambda s: s.rolling(20, min_periods=10).mean())
-    df["ma_bias_20"] = (df["close"] / (ma_20 + 1e-8)) - 1.0
+    ma_20 = g[price_col].transform(lambda s: s.rolling(20, min_periods=10).mean())
+    df["ma_bias_20"] = (df[price_col] / (ma_20 + 1e-8)) - 1.0
 
     vol_ma5 = g["volume"].transform(lambda s: s.rolling(5, min_periods=3).mean())
     vol_ma20 = g["volume"].transform(lambda s: s.rolling(20, min_periods=10).mean())
@@ -136,6 +151,19 @@ def compute_raw_feature_columns(bars_df: pd.DataFrame) -> pd.DataFrame:
     up_var20 = df.groupby("symbol")["up_ret_sq"].transform(lambda s: s.rolling(20, min_periods=10).sum())
     dn_var20 = df.groupby("symbol")["dn_ret_sq"].transform(lambda s: s.rolling(20, min_periods=10).sum())
     df["asym_semi_20d"] = (np.sqrt(up_var20) - np.sqrt(dn_var20)) / (np.sqrt(up_var20 + dn_var20) + 1e-8)
+
+    # 数据升级 1D & 1E：A 股 T+1 隔夜跳空与日内实体动量分离 (5日滚动累计)
+    df["_intraday_1d"] = (df["close"] / (df["open"] + 1e-8)) - 1.0
+    df["overnight_ret_5d"] = df.groupby("symbol")["_overnight_1d"].transform(
+        lambda s: s.fillna(0.0).rolling(5, min_periods=3).sum()
+    )
+    df["intraday_ret_5d"] = df.groupby("symbol")["_intraday_1d"].transform(
+        lambda s: s.fillna(0.0).rolling(5, min_periods=3).sum()
+    )
+
+    # 数据升级 1F：20日截面市场残差特异动量 (剥离当日截面等权市场均值后的波动率标准化残差)
+    mkt_ret_20d = df.groupby("trade_date")["ret_20d"].transform("mean")
+    df["idio_mom_20d"] = (df["ret_20d"] - mkt_ret_20d) / vol_20
     return df
 
 

@@ -9,19 +9,30 @@ from src.domain.rl_portfolio.a_share_env import ASharePortfolioEnv
 
 
 def build_alpha_risk_prior(obs: np.ndarray, n_assets: int, top_k: int = 3) -> torch.Tensor:
-    """结合截面 Alpha 排名、波动率与当前回撤构建风险感知先验偏置."""
+    """结合截面 Alpha 排名、免交易滞回缓冲带 (No-Trade Buffer)、当前持仓惯性与回撤构建风险感知先验."""
     alphas = obs[:n_assets].copy()
     vols = obs[n_assets:2 * n_assets]
+    current_weights = obs[2 * n_assets:3 * n_assets] if len(obs) >= 3 * n_assets else np.zeros(n_assets, dtype=np.float32)
     current_dd = float(obs[-1])
 
-    # 聚焦截面 Top-K 高置信度标的，抑制尾部噪音标的
-    threshold = np.sort(alphas)[-top_k]
-    masked_alpha = np.where(alphas >= threshold, alphas * 2.8 + 1.8, -5.0)
+    k = min(max(1, top_k), n_assets)
+    keep_m = min(n_assets, max(k + 1, int(np.ceil(k * 1.5))))
+    sorted_alphas = np.sort(alphas)
+    top_k_thresh = sorted_alphas[-k]
+    buffer_m_thresh = sorted_alphas[-keep_m]
+    median_alpha = float(np.median(alphas))
 
-    # 动态现金防守水位：当处于回撤期 (>5%) 或市场截面波动率飙升时提高现金先验
+    # 滞回缓冲规则：新进标的需进入 Top-K；已持仓标的只要仍居 Top-M 且高于截面中位数即可获持仓惯性加分，抑制无效换手
+    is_held = current_weights > 1e-3
+    in_buffer = is_held & (alphas >= max(buffer_m_thresh, median_alpha))
+    active_mask = (alphas >= top_k_thresh) | in_buffer
+    inertia_bonus = np.where(in_buffer, 1.35, 0.0)
+    masked_alpha = np.where(active_mask, alphas * 2.5 + 1.5 + inertia_bonus, -4.5)
+
+    # 动态现金防守水位：常态下保持高权益仓位避免现金拖累，仅在回撤 (>5%) 或高波动时抬升现金先验
     mean_vol = float(np.mean(vols))
-    cash_logit = 0.5 + 10.0 * max(0.0, current_dd - 0.04) + 0.5 * max(0.0, mean_vol)
-    prior = np.concatenate([masked_alpha, np.array([cash_logit], dtype=np.float32)])
+    cash_logit = -0.35 + 8.0 * max(0.0, current_dd - 0.05) + 0.35 * max(0.0, mean_vol)
+    prior = np.concatenate([masked_alpha.astype(np.float32), np.array([cash_logit], dtype=np.float32)])
     return torch.tensor(prior, dtype=torch.float32).unsqueeze(0)
 
 

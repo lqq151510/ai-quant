@@ -4,7 +4,7 @@ from datetime import date
 import pandas as pd
 import pytest
 
-from quant_research.prepare import dividend_per_share, prepare_etf_snapshot
+from quant_research.prepare import _resolve_split_ex_date, _round_mill, dividend_per_share, prepare_etf_snapshot
 from quant_research.protocol import ETF_SYMBOLS, RESEARCH_START, ResearchPeriod
 from quant_research.snapshot import audit_snapshot, file_sha256, read_snapshot
 
@@ -57,3 +57,11 @@ def test_unknown_distribution_units_never_turn_into_cash():
     for raw in ("每100份派现金0.8000", "待公布", float("nan")):
         with pytest.raises(ValueError, match="unrecognized"):
             dividend_per_share(raw)
+
+
+def test_split_record_date_maps_to_next_exchange_session_and_mill_rounding():
+    sessions = pd.DatetimeIndex(pd.to_datetime(["2015-04-13", "2015-04-14", "2015-04-15", "2022-08-26", "2022-08-29"]))
+    assert _resolve_split_ex_date(pd.Timestamp("2015-04-14"), sessions) == pd.Timestamp("2015-04-15")
+    assert _resolve_split_ex_date(pd.Timestamp("2022-08-26"), sessions) == pd.Timestamp("2022-08-29")
+    assert _round_mill(8.001 * 1.1) == pytest.approx(8.801)
+    assert _round_mill(8.001 * 0.9) == pytest.approx(7.201)

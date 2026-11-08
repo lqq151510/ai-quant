@@ -127,19 +127,22 @@ class _Position:
                 quantity -= consumed
         self.lots = [lot for lot in self.lots if lot.quantity]
 
-    def apply_split(self, multiplier: float, available: date) -> None:
-        # Round only exact integer quantities. Fractional entitlements need
-        # their own verified cash-in-lieu inputs.
+    def apply_split(self, multiplier: float, available: date, *, truncate_fractional: bool = False) -> None:
+        # Round only exact integer quantities unless ETF integer conversion truncation is enabled.
         quantities = [lot.quantity * multiplier for lot in self.lots]
-        if any(abs(qty - round(qty)) > 1e-8 for qty in quantities):
+        if not truncate_fractional and any(abs(qty - round(qty)) > 1e-8 for qty in quantities):
             raise LedgerError("split creates fractional units in a held lot")
+        new_total = floor(self.quantity * multiplier + 1e-8) if truncate_fractional else sum(round(qty) for qty in quantities)
         if multiplier >= 1:
-            extra = sum(round(qty) for qty in quantities) - self.quantity
-            if extra:
+            extra = new_total - self.quantity
+            if extra > 0:
                 self.lots.append(_Lot(extra, available))
         else:
             for lot, quantity in zip(self.lots, quantities, strict=True):
-                lot.quantity = round(quantity)
+                lot.quantity = floor(quantity + 1e-8) if truncate_fractional else round(quantity)
+            remainder = new_total - self.quantity
+            if remainder > 0 and self.lots:
+                self.lots[0].quantity += remainder
             self.lots = [lot for lot in self.lots if lot.quantity]
 
 
@@ -424,7 +427,11 @@ def simulate(
                 position = positions[event.symbol]
                 if position.quantity != quantity:
                     raise LedgerError(f"share count changed after record date: {event.symbol} {day}")
-                position.apply_split(event.share_multiplier, event.share_available_date)
+                position.apply_split(
+                    event.share_multiplier,
+                    event.share_available_date,
+                    truncate_fractional=(rows[event.symbol].kind == "etf"),
+                )
                 event_rows.append((day, event.symbol, "share_change", 0.0, 0.0,
                                    position.quantity - quantity))
         remaining = []

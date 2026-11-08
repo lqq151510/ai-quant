@@ -157,14 +157,24 @@ class SpatioTemporalKGAlphaModel(nn.Module):
         )
         self.kg_scale = nn.Parameter(torch.tensor(0.22))
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """输入 (B, N, L, F) -> 输出时空融合截面 Alpha 分数 (B, N)."""
-        with torch.no_grad():
-            self.itrans_branch.eval()
-            self.temporal_encoder.eval()
-            base_alpha = self.itrans_branch(x)  # (B, N)
-            h_intra = self.temporal_encoder(x)  # (B, N, d_model)
-        # 沿动态知识图谱 (含纳指跨市场映射边与产业链边) 聚合邻居特征
-        h_kg = torch.matmul(self.norm_adj.unsqueeze(0), h_intra)
+    def forward(self, x: torch.Tensor, dynamic_adj: torch.Tensor | None = None) -> torch.Tensor:
+        """输入 (B, N, L, F) 与可选时点动态邻接张量 (B, N, N) -> 输出时空融合截面 Alpha 分数 (B, N)."""
+        frozen_backbones = not any(p.requires_grad for p in self.itrans_branch.parameters())
+        if frozen_backbones:
+            with torch.no_grad():
+                self.itrans_branch.eval()
+                self.temporal_encoder.eval()
+                base_alpha = self.itrans_branch(x)  # (B, N)
+                h_intra = self.temporal_encoder(x)  # (B, N, d_model)
+        else:
+            base_alpha = self.itrans_branch(x)      # (B, N)
+            h_intra = self.temporal_encoder(x)      # (B, N, d_model)
+        # 沿双时点 (Bitemporal) 动态知识图谱或静态先验邻接矩阵聚合邻居特征
+        if dynamic_adj is not None:
+            row_sum = dynamic_adj.sum(dim=-1, keepdim=True).clamp(min=1e-6)
+            norm_dyn = dynamic_adj / row_sum
+            h_kg = torch.bmm(norm_dyn, h_intra)
+        else:
+            h_kg = torch.matmul(self.norm_adj.unsqueeze(0), h_intra)
         kg_alpha = self.kg_proj(h_kg).squeeze(-1)
         return base_alpha + self.kg_scale * kg_alpha

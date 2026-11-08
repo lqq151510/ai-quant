@@ -119,3 +119,23 @@ def test_weight_cannot_use_leverage_and_small_target_is_visible():
         simulate(bars, [FRIDAY], {FRIDAY: {ETF: 1.01}}, initial_cash=1000)
     result = simulate(bars, [FRIDAY], {FRIDAY: {ETF: 0.35}}, initial_cash=1000)
     assert (result.orders.iloc[0]["requested_qty"], result.orders.iloc[0]["reason"]) == (35, "board_lot")
+
+
+def test_etf_fractional_split_truncates_to_integer_shares_while_stock_rejects():
+    friday_bar = {"open": 2.243, "high": 2.249, "low": 2.151, "close": 2.243, "upper_limit": 2.467, "lower_limit": 2.019}
+    ex_bar = {"open": 8.001, "high": 8.100, "low": 7.790, "close": 7.818, "preclose": 8.001,
+              "upper_limit": 8.801, "lower_limit": 7.201}
+    bars = pd.DataFrame([bar(FRIDAY, **friday_bar), bar(MONDAY, **ex_bar)])
+    actions = pd.DataFrame([{
+        "symbol": ETF, "record_date": FRIDAY, "ex_date": MONDAY, "pay_date": None,
+        "share_available_date": MONDAY, "cash_per_share": 0.0, "share_multiplier": 0.2803,
+    }])
+    result = simulate(bars, [FRIDAY, MONDAY], {FRIDAY: {ETF: 1.0}}, actions, initial_cash=1_000, cost=Costs(0, 0, 0))
+    # 400 shares * 0.2803 = 112.12 -> truncated to 112 integer shares
+    assert result.positions["quantity"].tolist() == [400, 112]
+    assert result.cash_events.iloc[0]["quantity_delta"] == -288
+
+    stock_bars = pd.DataFrame([bar(FRIDAY, STOCK), bar(MONDAY, STOCK)])
+    stock_actions = actions.assign(symbol=STOCK)
+    with pytest.raises(LedgerError, match="fractional units"):
+        simulate(stock_bars, [FRIDAY, MONDAY], {FRIDAY: {STOCK: 1.0}}, stock_actions, initial_cash=10_000, cost=Costs(0, 0, 0))

@@ -87,19 +87,30 @@ class ASharePortfolioEnv(gym.Env):
         raw_target_w = raw_alloc[:self.n_assets]
         raw_target_cash = float(raw_alloc[-1])
 
-        # 对齐 3 日波段调仓周期：每 3 个交易日根据 Top-3 分散化 + PPO 风险敞口控制调仓
+        # 对齐波段调仓周期：结合 Alpha 预测、RL 策略动作 Logits 与当前持仓惯性缓冲选股
         if self.step_idx % 3 == 0 or np.sum(self.weights) < 1e-5:
-            top_idx = np.argsort(self.alpha_preds[self.step_idx])[-3:]
+            k_pick = min(3, self.n_assets)
+            composite_score = (
+                0.60 * self.alpha_preds[self.step_idx]
+                + 0.40 * np.tanh(logits[:self.n_assets])
+                + 0.35 * (self.weights > 1e-3).astype(np.float32)
+            )
+            top_idx = np.argsort(composite_score)[-k_pick:]
             top_mask = np.zeros(self.n_assets, dtype=np.float32)
-            # 保持 Top-3 核心分散化基底，叠加 PPO 微调倾角，防止单票过度集中
-            tilt = 1.0 + 0.15 * np.tanh(logits[top_idx])
+            tilt = 1.0 + 0.30 * np.tanh(logits[top_idx])
             top_mask[top_idx] = tilt / np.sum(tilt)
             # PPO 动态控制总权益仓位敞口与现金防守比例
             current_dd = (self.peak_nav - self.nav) / max(self.peak_nav, 1e-8)
-            base_cash = float(np.clip(raw_target_cash + 0.65 * current_dd, 0.12, 0.45))
+            base_cash = float(np.clip(raw_target_cash + 0.50 * current_dd, 0.05, 0.40))
             equity_exposure = 1.0 - base_cash
-            target_w = top_mask * equity_exposure
-            target_cash = base_cash
+            proposed_w = top_mask * equity_exposure
+            # 若与当前持仓 L1 偏差处于免交易死区内，则保持原持仓消除摩擦损耗
+            if np.sum(self.weights) > 1e-5 and float(np.sum(np.abs(proposed_w - self.weights))) < 0.12:
+                target_w = self.weights.copy()
+                target_cash = self.cash_weight
+            else:
+                target_w = proposed_w
+                target_cash = base_cash
         else:
             target_w = self.weights.copy()
             target_cash = self.cash_weight
@@ -126,13 +137,13 @@ class ASharePortfolioEnv(gym.Env):
         self.weights = (post_values / max(total_val, 1e-8)).astype(np.float32)
         self.cash_weight = float(target_cash / max(total_val, 1e-8))
 
-        # 奖励塑形: 净超额收益 - 换手惩罚 - 超阈值回撤二次方惩罚
+        # 奖励塑形: 净超额收益 - 强化换手惩罚 - 超阈值回撤二次方惩罚
         bench_ret = float(np.mean(asset_rets))
         excess_ret = net_ret - 0.7 * bench_ret
         dd_excess = max(0.0, drawdown - self.dd_threshold)
         reward = float(
             excess_ret * 100.0
-            - 0.15 * (buy_turnover + sell_turnover)
+            - 0.45 * (buy_turnover + sell_turnover)
             - self.dd_penalty_weight * (dd_excess ** 2) * 100.0
         )
 
