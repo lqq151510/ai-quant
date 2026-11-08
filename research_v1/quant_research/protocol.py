@@ -9,6 +9,7 @@ HORIZONS = (5, 20)
 RESEARCH_START = date(2015, 1, 1)
 VALIDATION_START = date(2023, 1, 1)
 HOLDOUT_START = date(2025, 1, 1)
+LAST_EXPLORED_SESSION = date(2026, 11, 6)
 MAX_DRAWDOWN = 0.15
 RESEARCH_LINES = tuple(f"{kind}-{h}d" for kind in ("etf", "stock") for h in HORIZONS)
 

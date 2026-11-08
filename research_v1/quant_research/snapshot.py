@@ -9,11 +9,12 @@ import tempfile
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
+from collections.abc import Callable
 
 import pandas as pd
 import numpy as np
 
-from .protocol import ETF_SYMBOLS, RESEARCH_START, ResearchPeriod
+from .protocol import ETF_SYMBOLS, LAST_EXPLORED_SESSION, RESEARCH_START, ResearchPeriod
 
 TABLES = {"bars", "calendar", "actions", "membership", "securities", "news", "edges"}
 ORIGINS = {"market", "synthetic_fixture"}
@@ -63,7 +64,9 @@ def write_snapshot(
     return manifest
 
 
-def read_snapshot(path: Path) -> tuple[dict[str, Any], dict[str, pd.DataFrame]]:
+def read_snapshot(
+    path: Path, *, parquet_reader: Callable[[Path], pd.DataFrame] = pd.read_parquet
+) -> tuple[dict[str, Any], dict[str, pd.DataFrame]]:
     manifest = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
     records = manifest["tables"]
     if manifest.get("schema_version") != 1 or manifest.get("origin") not in ORIGINS:
@@ -75,14 +78,15 @@ def read_snapshot(path: Path) -> tuple[dict[str, Any], dict[str, pd.DataFrame]]:
         file = path / f"{name}.parquet"
         if file_sha256(file) != record["sha256"]:
             raise ValueError(f"snapshot hash mismatch: {name}")
-        frames[name] = pd.read_parquet(file)
+        frames[name] = parquet_reader(file)
         if len(frames[name]) != record["rows"]:
             raise ValueError(f"snapshot row count mismatch: {name}")
     return manifest, frames
 
 
 def audit_snapshot(
-    manifest: Mapping[str, Any], frames: Mapping[str, pd.DataFrame], period: ResearchPeriod, kind: str
+    manifest: Mapping[str, Any], frames: Mapping[str, pd.DataFrame], period: ResearchPeriod, kind: str,
+    *, allow_forward_period: bool = False,
 ) -> dict[str, Any]:
     if kind not in {"stock", "etf"}:
         raise ValueError("unknown market line")
@@ -91,7 +95,9 @@ def audit_snapshot(
         problems.append("synthetic fixtures are excluded from market evidence")
     if not manifest.get("sources"):
         problems.append("source evidence missing")
-    if period.start != RESEARCH_START:
+    if allow_forward_period and period.start <= LAST_EXPLORED_SESSION:
+        problems.append("forward period must begin after the last explored session")
+    elif not allow_forward_period and period.start != RESEARCH_START:
         problems.append("start differs from pre-registered study window")
     coverage = manifest.get("coverage", {})
     for key in ("exchange_calendar", f"{kind}_raw_bars", f"{kind}_actions", f"{kind}_limits"):
@@ -111,6 +117,7 @@ def audit_snapshot(
             problems.append("exchange calendar does not span requested period")
 
     counts: dict[str, int] = {}
+    limit_sources: dict[str, int] = {}
     bars = frames.get("bars", pd.DataFrame())
     if not BAR_COLUMNS <= set(bars):
         problems.append(f"bars missing columns: {sorted(BAR_COLUMNS - set(bars))}")
@@ -130,6 +137,19 @@ def audit_snapshot(
         trades = bars[bars["tradable"].eq(True)]
         if trades[["upper_limit", "lower_limit"]].isna().any().any():
             problems.append("tradeable bars have unknown price limits")
+        if "limit_source" in trades:
+            limit_sources = {str(k): int(v) for k, v in trades["limit_source"].fillna("unknown").value_counts().items()}
+            if coverage.get(f"{kind}_limits") == "verified" and (
+                "rule_derived_candidate" in limit_sources or "unknown" in limit_sources
+            ):
+                problems.append("provisional price limits cannot satisfy verified coverage")
+        if "valuation_close" in bars:
+            marks = bars.loc[bars["valuation_close"].notna()]
+            if not marks.empty and (
+                kind != "etf" or not marks["tradable"].eq(False).all()
+                or not np.isfinite(marks["valuation_close"]).all() or not marks["valuation_close"].gt(0).all()
+            ):
+                problems.append("invalid nontrading ETF valuation marks")
     actions = frames.get("actions")
     if actions is None or not {"symbol", "ex_date", "pay_date", "cash_per_share", "share_multiplier"} <= set(actions):
         problems.append("corporate action records missing")
@@ -182,8 +202,11 @@ def audit_snapshot(
                     problems.append("missing daily bars for historically active main-board members")
                     break
 
-    return {
+    result = {
         "origin": manifest.get("origin"), "kind": kind, "status": "ready" if not problems else "data_insufficient",
         "start": period.start.isoformat(), "end": period.end.isoformat(), "sessions": len(days),
         "rows_by_symbol": counts, "issues": problems,
     }
+    if limit_sources:
+        result["tradable_limit_sources"] = limit_sources
+    return result

@@ -27,6 +27,11 @@ def main(argv: list[str] | None = None) -> int:
         sub.add_argument("--end", type=date.fromisoformat, required=True)
         sub.add_argument("--kind", choices=("all", "etf", "stock"), default="all")
     backtest.add_argument("--out", type=Path, required=True)
+    for sub in (demo, backtest):
+        sub.add_argument("--allocation-study", action="store_true",
+                         help="compare three allocation methods and save a paper target plan")
+        sub.add_argument("--strategy-optimization", action="store_true",
+                         help="compare fixed HRP risk and turnover rules on the same research ledger")
     evidence = commands.add_parser("evidence", help="calculate forward evidence features at an explicit cutoff")
     evidence.add_argument("bundle", type=Path)
     evidence.add_argument("--as-of", type=datetime.fromisoformat, required=True)
@@ -38,10 +43,22 @@ def main(argv: list[str] | None = None) -> int:
     prepare.add_argument("--out", type=Path, required=True)
     prepare.add_argument("--start", type=date.fromisoformat, default=RESEARCH_START)
     prepare.add_argument("--end", type=date.fromisoformat, required=True)
+    bulk_etf = commands.add_parser("prepare-etf-bulk", help="reconcile local ETF captures and record provisional price limits")
+    bulk_etf.add_argument("bulk", type=Path)
+    bulk_etf.add_argument("--out", type=Path, required=True)
+    bulk_etf.add_argument("--start", type=date.fromisoformat, default=RESEARCH_START)
+    bulk_etf.add_argument("--end", type=date.fromisoformat, required=True)
     args = parser.parse_args(argv)
 
     def emit(value: object) -> None:
         print(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False))
+
+    def prepare_output() -> None:
+        if args.allocation_study or args.strategy_optimization:
+            from .allocation import require_allocation_dependencies
+
+            require_allocation_dependencies()
+        args.out.mkdir(parents=True, exist_ok=False)
 
     try:
         if args.command == "probe":
@@ -64,13 +81,23 @@ def main(argv: list[str] | None = None) -> int:
             manifest = prepare_etf_snapshot(args.probe, args.calendar, args.out, ResearchPeriod(args.start, args.end))
             emit({"origin": manifest["origin"], "coverage": manifest["coverage"], "snapshot": str(args.out.resolve())})
             return 0
+        if args.command == "prepare-etf-bulk":
+            from .etf_bulk import prepare_bulk_etf_snapshot
+            from .snapshot import audit_snapshot, read_snapshot
+
+            period = ResearchPeriod(args.start, args.end)
+            prepare_bulk_etf_snapshot(args.bulk, args.out, period)
+            manifest, frames = read_snapshot(args.out)
+            emit({"snapshot": str(args.out.resolve()), "coverage": manifest["coverage"],
+                  "audit": audit_snapshot(manifest, frames, period, "etf")})
+            return 0
 
         from .snapshot import audit_snapshot, read_snapshot, write_snapshot
 
         if args.command == "demo":
             from .demo import fixture
 
-            args.out.mkdir(parents=True, exist_ok=False)
+            prepare_output()
             frames = fixture()
             write_snapshot(args.out / "fixture", origin="synthetic_fixture", frames=frames, sources=[])
             manifest, frames = read_snapshot(args.out / "fixture")
@@ -83,12 +110,15 @@ def main(argv: list[str] | None = None) -> int:
             manifest, frames = read_snapshot(args.snapshot)
             period = ResearchPeriod(RESEARCH_START, args.end)
             kinds = ("etf", "stock") if args.kind == "all" else (args.kind,)
-            gates = [audit_snapshot(manifest, frames, period, kind) for kind in kinds]
+            audit_kinds = kinds
+            if args.command == "baseline" and args.strategy_optimization and "etf" not in kinds:
+                audit_kinds = ("etf", *kinds)
+            gates = [audit_snapshot(manifest, frames, period, kind) for kind in audit_kinds]
             ready = all(row["status"] == "ready" for row in gates)
             if args.command == "audit" or not ready:
                 emit(gates)
                 return 0 if ready else 2
-            args.out.mkdir(parents=True, exist_ok=False)
+            prepare_output()
             start, end = period.start, period.end
             origin = "audited_market"
             (args.out / "input_manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -111,11 +141,27 @@ def main(argv: list[str] | None = None) -> int:
             "code_sha256": {p.name: file_sha256(p) for p in sorted(archive.glob("*.py"))},
             "lock_sha256": file_sha256(lock) if lock.exists() else None,
         }
+        if args.allocation_study or args.strategy_optimization:
+            fingerprint["allocation_study"] = True
+        if args.strategy_optimization:
+            from .strategy_optimization import DEFENSIVE_EXPOSURE_SCALE, MIN_POSITIVE_ETFS, REBALANCE_BAND
+
+            fingerprint["strategy_optimization"] = True
+            fingerprint["optimization_parameters"] = {
+                "rebalance_turnover_band": REBALANCE_BAND,
+                "minimum_positive_broad_market_etfs": MIN_POSITIVE_ETFS,
+                "defensive_exposure_scale": DEFENSIVE_EXPOSURE_SCALE,
+                "breadth_window_sessions": 20,
+            }
         (args.out / "run_manifest.json").write_text(json.dumps(fingerprint, ensure_ascii=False, indent=2), encoding="utf-8")
 
-        results = run_baselines(frames, args.out, start=start, end=end, origin=origin, kinds=kinds)
+        results = run_baselines(frames, args.out, start=start, end=end, origin=origin, kinds=kinds,
+                                allocation_study=args.allocation_study, strategy_optimization=args.strategy_optimization)
         save_report(args.out, results, origin=origin, period=f"{start:%Y-%m-%d} — {end:%Y-%m-%d}")
-        emit({"origin": origin, "ledger_runs": len(results), "report": str((args.out / "report.html").resolve())})
+        summary = {"origin": origin, "ledger_runs": len(results), "report": str((args.out / "report.html").resolve())}
+        if args.allocation_study or args.strategy_optimization:
+            summary["allocation_plan"] = str((args.out / "allocation_plan.json").resolve())
+        emit(summary)
         return 0
     except (ValueError, FileExistsError, OSError, RuntimeError) as exc:
         print(f"{type(exc).__name__}: {exc}", file=sys.stderr)

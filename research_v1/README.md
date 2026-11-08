@@ -30,6 +30,47 @@ uv run --frozen --extra models python -m quant_research.cli baseline /absolute/s
 
 `demo` 的 `report.html` 和 `metrics.json` 始终标记 `synthetic_fixture/engineering_only`。输出64份独立账本：ETF/个股 × 5/20交易日 × 1万/10万元 × 正常/双倍摩擦 × 现金/等权/动量/沪深300ETF持有。每份含每日权益、逐笔订单、持仓和现金事件。用 DuckDB 独立查询检查 `净值=现金+持仓价值+应收`。
 
+## 分配与特征对照
+
+在 `research_v1` 下运行。每次使用新的输出路径。
+
+```bash
+uv sync --frozen --extra models --extra allocation
+.venv/bin/python -m quant_research.cli demo --allocation-study --out artifacts/allocation-demo
+.venv/bin/python -m quant_research.cli demo --strategy-optimization --out artifacts/strategy-optimization-demo
+.venv/bin/python -m quant_research.feature_study demo --out artifacts/feature-study.json
+.venv/bin/python -m quant_research.regime_study --demo --out artifacts/wasserstein-hmm.json
+```
+
+分配实验在四条研究线上额外生成 48 份账本。等权、逆波动和 HRP 复用同一正动量候选、调仓时点与成交规则。个股最多 10 只、单票目标不高于 10%，ETF 单只目标不高于 35%。目标总仓位统一为 `0.8 × min(1, 候选数 × 单标的上限)`，给三种方法留出分配空间，余量保留为现金。HTML 报告展示扣费后收益、回撤、换手和目标集中度，`allocation_plan.json` 标记决策日与已知的下一交易日。历史决策仅用于回放。可在 `baseline` 加相同开关，沿用快照准入与封存段限制。
+
+`--strategy-optimization` 额外对照原始 HRP 与三个候选。调仓缓冲在标的集合相同、持仓未超上限且拟调仓比例不超过总资产 2% 时跳过调仓。趋势降仓在四只预登记 ETF 中不足两只的 20 日收益为正时，将原目标仓位减半。趋势数据缺失时沿用原目标并计数。第三组同时启用两条规则，退出和防御性减仓优先执行。报告按研究线、本金和费用给出净收益、最大回撤、换手和平均实仓比例相对原始 HRP 的差值。
+
+特征对照沿用次日开盘至第 `h+1` 日开盘标签，分别测试 CLV 和日线上下行方差比、Löwdin 对称正交化、120 个交易日半衰期和 Wasserstein 距离。四个候选与价格基线使用相同完整样本，训练标签结束时间须早于验证起点。Löwdin 只在训练集拟合并记录舍弃的退化方向。状态对照用固定四只 ETF 作为市场代理，比较有无 Wasserstein 特征的因果过滤概率。合成演示只核验工程。
+
+## 资金流与分钟数据采集
+
+```bash
+.venv/bin/python -m quant_research.fund_flow --stock 600000 --etf 510300 --out artifacts/flow-observation
+.venv/bin/python -m quant_research.intraday --stock 600000 --etf 510300 --out artifacts/minute-observation
+```
+
+采集保存来源、原始响应表的 SHA-256 和实际采集时间。股票资金流使用东财近期个股接口，ETF 使用有数据日期及更新时间的东财快照。资金流比例统一存为小数，真实零值与缺失分开。特征研究的 `audited` 和 `forward` 子命令支持 `--fund-flow-capture` 和 `--intraday-capture`，只使用信号日北京时间 20:00 前已捕获的同日记录。两侧样本覆盖不足时只报告覆盖率。`forward` 要求审计通过，并显式指定 `--start`、`--evaluation-start` 和 `--end`，训练与评估区间均须晚于 2026-11-06。
+
+分钟模块保留完整常规交易时段才计算单边实现方差，排除跨午休及隔夜跳变。日线代理仍作为独立特征。AKShare 的 ETF 一分钟接口仅提供近期数据，需持续积累前向样本。 [AKShare ETF 分时数据说明](https://akshare.akfamily.xyz/data/fund/fund_public.html#etf-1)
+
+## 原始数据审计
+
+可直接从本地批量采集目录生成单独的 ETF 审计快照。用 `prepare-etf-bulk` 校验采集文件哈希、对照腾讯 OHLC 和 BaoStock 参考价，输出候选限价及其来源。候选限价需要进一步核验，准入状态以命令输出为准。
+
+```bash
+.venv/bin/python -m quant_research.cli prepare-etf-bulk \
+  /path/to/bulk-market-20261107 --end 2026-11-06 --out artifacts/etf-bulk-review
+.venv/bin/python -m quant_research.cli audit artifacts/etf-bulk-review --end 2026-11-06 --kind etf
+```
+
+原始行情的开高低收保留供应商值。2015 年 510500 停牌折算日另用 `valuation_close` 记账，撮合按停牌处理。2015 年份额按账户合计向下取整，2022 年份额按账户合计向上取整。2022 年 8 月 26 日收盘仍用旧份额，拆分后的份额于下一交易日开盘前入账。默认公司行动仍要求精确折成整数份。 [2015 年折算公告](https://www.sse.com.cn/disclosure/fund/announcement/c/2015-04-15/510500_20150415_2.pdf) · [2022 年拆分公告](https://www.sse.com.cn/disclosure/fund/announcement/c/new/2022-08-23/510500_20220823_1_aMMa3ZNB.pdf)
+
 `probe` 保存的是供应商实际返回表和部分源页面，不是完整研究数据集，也不是HTTP线上字节的全量抓包。日线采集成功不能证明历史成分、限价和公司行动覆盖合格。报告状态保持 `data_insufficient`，直到各层证据齐全。这个入口没有合成降级。
 
 将本轮已保存的原始证据转为可审计的 Parquet 快照：

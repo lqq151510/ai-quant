@@ -46,6 +46,19 @@ def test_labels_and_features_reject_conflicting_corporate_actions():
             market_close_returns(bars, invalid, dates)
 
 
+def test_halted_split_mark_carries_forward_without_an_artificial_return():
+    from quant_research.baseline import market_close_returns
+
+    dates = pd.to_datetime(["2015-04-10", "2015-04-13", "2015-04-14", "2015-04-15"])
+    bars = pd.DataFrame({"date": dates, "symbol": "510500", "close": [2.243, 2.243, 2.243, 7.818],
+                         "valuation_close": [np.nan, np.nan, 8.001, np.nan]})
+    actions = pd.DataFrame([{"symbol": "510500", "ex_date": dates[2], "pay_date": pd.NaT,
+                             "record_date": dates[1], "cash_per_share": 0., "share_multiplier": 0.28032483}])
+    returns = market_close_returns(bars, actions, dates)["510500"]
+    assert returns.iloc[1:3].tolist() == [0., 0.]
+    assert returns.iloc[3] == pytest.approx(7.818 / 8.001 - 1)
+
+
 def test_future_membership_and_todays_turnover_cannot_change_past_cohort():
     dates = pd.bdate_range("2024-01-02", periods=90)
     rows = [dict(date=d, symbol=s, kind="stock", amount=a) for d in dates

@@ -113,7 +113,7 @@ def _fetch_f10(url: str) -> dict[str, tuple[pd.DataFrame, str]]:
 def _fetch(request: _Request) -> tuple[dict[str, tuple[pd.DataFrame, str | None]], str | None]:
     if request.provider == "eastmoney_f10":
         return _fetch_f10(request.endpoint), None
-    if request.provider == "akshare_sina":
+    if request.provider in {"akshare_sina", "akshare_eastmoney"}:
         import akshare
 
         table = getattr(akshare, request.endpoint)(**request.arguments)
@@ -181,7 +181,7 @@ def _worker(request_json: str, output: str) -> None:
 
 
 def _collect(request: _Request, raw: Path) -> dict[str, Any]:
-    evidence: dict[str, Any] = {"request": asdict(request)}
+    evidence: dict[str, Any] = {"request": asdict(request), "started_at_utc": datetime.now(timezone.utc).isoformat()}
     timeout = _BAOSTOCK_TIMEOUT if request.provider == "baostock" else _REQUEST_TIMEOUT
     with tempfile.TemporaryDirectory(prefix=f".{request.key}-", dir=raw) as scratch:
         try:

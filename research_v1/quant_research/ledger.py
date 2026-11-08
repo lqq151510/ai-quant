@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP
 from math import floor, isfinite
+from types import MappingProxyType
 
 import pandas as pd
 
@@ -127,7 +128,10 @@ class _Position:
                 quantity -= consumed
         self.lots = [lot for lot in self.lots if lot.quantity]
 
-    def apply_split(self, multiplier: float, available: date) -> None:
+    def apply_split(self, multiplier: float, available: date, rounding: str) -> None:
+        if rounding != "exact":
+            self._apply_rounded_split(multiplier, available, rounding)
+            return
         # Round only exact integer quantities. Fractional entitlements need
         # their own verified cash-in-lieu inputs.
         quantities = [lot.quantity * multiplier for lot in self.lots]
@@ -142,6 +146,25 @@ class _Position:
                 lot.quantity = round(quantity)
             self.lots = [lot for lot in self.lots if lot.quantity]
 
+    def _apply_rounded_split(self, multiplier: float, available: date, rounding: str) -> None:
+        factor = Decimal(str(multiplier))
+        mode = ROUND_FLOOR if rounding == "floor" else ROUND_CEILING
+        old_total = new_total = 0
+        updated = []
+        # Round the account total once. Assign the integer units in release
+        # order so acquiring shares in multiple orders does not change entitlement.
+        for lot in sorted(self.lots, key=lambda entry: entry.available):
+            old_total += lot.quantity
+            converted_total = int((old_total * factor).to_integral_value(rounding=mode))
+            converted = converted_total - new_total
+            new_total = converted_total
+            if multiplier >= 1:
+                updated.append(lot)
+                converted -= lot.quantity
+            if converted:
+                updated.append(_Lot(converted, max(lot.available, available)))
+        self.lots = updated
+
 
 @dataclass(frozen=True)
 class _Action:
@@ -152,6 +175,18 @@ class _Action:
     cash_per_share: float
     share_multiplier: float
     share_available_date: date
+    split_rounding: str
+
+
+@dataclass(frozen=True)
+class CloseState:
+    """Settled portfolio at a session close, before the next opening auction."""
+
+    day: date
+    weights: Mapping[str, float]
+    cash_weight: float
+    drawdown: float
+    nav: float
 
 
 @dataclass(frozen=True)
@@ -160,6 +195,7 @@ class BacktestResult:
     orders: pd.DataFrame
     positions: pd.DataFrame
     cash_events: pd.DataFrame
+    close_state: CloseState | None = None
 
 
 def _require_columns(frame: pd.DataFrame, names: Sequence[str], label: str) -> None:
@@ -171,8 +207,7 @@ def _require_columns(frame: pd.DataFrame, names: Sequence[str], label: str) -> N
 def _prepare_bars(bars: pd.DataFrame) -> pd.DataFrame:
     _require_columns(bars, _BARS, "bars")
     columns = list(_BARS)
-    if "preclose" in bars:
-        columns.append("preclose")
+    columns.extend(column for column in ("preclose", "valuation_close") if column in bars)
     data = bars.loc[:, columns].copy()
     data["date"] = data["date"].map(_date)
     if data["symbol"].isna().any() or data["symbol"].eq("").any():
@@ -187,6 +222,13 @@ def _prepare_bars(bars: pd.DataFrame) -> pd.DataFrame:
         raise LedgerError("bars require an explicit tradable flag")
     for column in set(columns).difference(("date", "symbol", "kind", "tradable")):
         data[column] = pd.to_numeric(data[column], errors="raise").astype(float)
+    if "valuation_close" in data:
+        marks = data.loc[data["valuation_close"].notna()]
+        if (
+            not marks["valuation_close"].map(_positive).all()
+            or marks["tradable"].any() or marks["kind"].ne("etf").any()
+        ):
+            raise LedgerError("valuation_close requires a positive mark for a nontradable ETF")
     return data
 
 
@@ -232,6 +274,10 @@ def _prepare_actions(actions: pd.DataFrame | None, days: list[date]) -> list[_Ac
         available = ex_date if pd.isna(available) else _date(available)
         cash = float(row.cash_per_share)
         multiplier = float(row.share_multiplier)
+        rounding = getattr(row, "split_rounding", None)
+        rounding = "exact" if pd.isna(rounding) else rounding
+        if rounding not in ("exact", "floor", "ceil") or (rounding != "exact" and multiplier == 1):
+            raise LedgerError(f"invalid split rounding policy: {key}")
         if (
             record >= ex_date or (record >= days[0] and record not in preceding_day and record != days[0])
             or (pay is not None and pay < ex_date) or available < ex_date
@@ -241,9 +287,9 @@ def _prepare_actions(actions: pd.DataFrame | None, days: list[date]) -> list[_Ac
             raise LedgerError(f"invalid corporate action dates or quantities: {key}")
         if multiplier != 1 and record != default_record and record >= days[0]:
             raise LedgerError(f"share change requires previous session record date: {key}")
-        if multiplier < 1 and available != ex_date:
+        if multiplier < 1 and available != ex_date and rounding == "exact":
             raise LedgerError(f"reverse split needs immediate delivery: {key}")
-        result.append(_Action(row.symbol, ex_date, record, pay, cash, multiplier, available))
+        result.append(_Action(row.symbol, ex_date, record, pay, cash, multiplier, available, rounding))
     return result
 
 
@@ -277,7 +323,7 @@ def normalize_actions(actions: pd.DataFrame | None, calendar: Sequence[DateLike]
     events = _prepare_actions(actions, days)
     return pd.DataFrame([event.__dict__ for event in events], columns=[
         "symbol", "ex_date", "record_date", "pay_date", "cash_per_share",
-        "share_multiplier", "share_available_date",
+        "share_multiplier", "share_available_date", "split_rounding",
     ])
 
 
@@ -310,15 +356,27 @@ def _liquidation_quantity(position: _Position, day: date, requested: int) -> int
     return quantity // LOT_SIZE * LOT_SIZE
 
 
+def _valuation_close(row: object) -> float:
+    mark = getattr(row, "valuation_close", float("nan"))
+    return mark if _positive(mark) else row.close
+
+
 def _rebalance(
     day: date, weights: dict[str, float], rows: dict[str, object],
     positions: dict[str, _Position], prior_close: dict[str, float],
     cash: float, receivable: float, cost: Costs, orders: list[tuple],
 ) -> float:
-    opening_nav = cash + receivable + sum(
-        position.quantity * (rows[symbol].open if _positive(rows[symbol].open) else prior_close[symbol])
-        for symbol, position in positions.items() if position.quantity
-    )
+    opening_nav = cash + receivable
+    for symbol, position in positions.items():
+        if not position.quantity:
+            continue
+        row = rows[symbol]
+        mark = getattr(row, "valuation_close", float("nan"))
+        if row.tradable and row.volume > 0 and _positive(row.open):
+            mark = row.open
+        elif not _positive(mark):
+            mark = prior_close[symbol]
+        opening_nav += position.quantity * mark
     desired = []
     for symbol in sorted(set(positions) | set(weights)):
         position = positions.get(symbol, _Position())
@@ -377,25 +435,37 @@ def simulate(
     *,
     initial_cash: float,
     cost: Costs = Costs(),
+    on_close: Callable[[CloseState], Mapping[str, float] | None] | None = None,
 ) -> BacktestResult:
-    """Simulate precomputed opening target weights on a supplied exchange calendar.
+    """Simulate opening target weights on a supplied exchange calendar.
 
-    The caller is responsible for shifting decisions to the next session and
-    verifying corporate action coverage. Open prices approximate executable
-    liquidity. Limits, explicit halts, and absent prices can prevent fills.
-    Stock ETF trading is the secondary market case only. Dividends are credited
-    at the supplied cash per share, on the first session on or after payment.
+    Static targets already refer to execution dates. With empty static targets,
+    on_close can read the settled account and schedule weights for the next
+    session. None retains current positions and an empty mapping requests
+    liquidation. The final close is returned without invoking the callback.
+
+    The caller verifies corporate action coverage. Open prices approximate
+    executable liquidity. Limits, explicit halts, and absent prices can prevent
+    fills. Stock ETF trading is the secondary market case only. Dividends are
+    credited at the supplied cash per share on the first session on or after
+    payment.
     """
     if not _positive(initial_cash) or _money(initial_cash) == 0:
         raise LedgerError("initial cash must be finite and positive to the cent")
     days = [_date(day) for day in calendar]
     if not days or days != sorted(set(days)):
         raise LedgerError("calendar must be non-empty, unique and increasing")
+    if targets and on_close is not None:
+        raise LedgerError("static targets and a close callback cannot be combined")
     execution = _prepare_targets(targets, set(days))
-    groups = _prepare_bars(bars).groupby("date", sort=False)
+    bar_data = _prepare_bars(bars)
+    groups = bar_data.groupby("date", sort=False)
+    security_kinds = bar_data.drop_duplicates("symbol").set_index("symbol")["kind"].to_dict()
     event_data = _prepare_actions(actions, days)
     ex_events, record_events = defaultdict(list), defaultdict(list)
     for event in event_data:
+        if event.split_rounding != "exact" and security_kinds.get(event.symbol) == "stock":
+            raise LedgerError(f"fractional split rounding requires an ETF: {event.symbol}")
         ex_events[event.ex_date].append(event)
         record_events[event.record_date].append(event)
     positions: dict[str, _Position] = {}
@@ -404,13 +474,14 @@ def simulate(
     pending: list[tuple[date, str, float]] = []
     equity_rows, order_rows, position_rows, event_rows = [], [], [], []
     cash = peak = last_nav = _money(initial_cash)
+    close_state = None
 
-    for day in days:
+    for index, day in enumerate(days):
         rows = {}
         if day in groups.indices:
             rows = {row.symbol: row for row in groups.get_group(day).itertuples(index=False)}
         for symbol, position in positions.items():
-            if position.quantity and (symbol not in rows or not _positive(rows[symbol].close)):
+            if position.quantity and (symbol not in rows or not _positive(_valuation_close(rows[symbol]))):
                 raise LedgerError(f"missing valuation for held {symbol} on {day}")
         for event in ex_events[day]:
             quantity = entitled.get(event, 0)
@@ -424,7 +495,7 @@ def simulate(
                 position = positions[event.symbol]
                 if position.quantity != quantity:
                     raise LedgerError(f"share count changed after record date: {event.symbol} {day}")
-                position.apply_split(event.share_multiplier, event.share_available_date)
+                position.apply_split(event.share_multiplier, event.share_available_date, event.split_rounding)
                 event_rows.append((day, event.symbol, "share_change", 0.0, 0.0,
                                    position.quantity - quantity))
         remaining = []
@@ -457,31 +528,45 @@ def simulate(
                     )
             cash = _rebalance(day, execution[day], rows, positions, opening_reference,
                               cash, receivable, cost, order_rows)
-        market_value = 0.0
+        market_values = {}
         for symbol, position in sorted(positions.items()):
             if position.quantity:
-                close = rows[symbol].close
+                close = _valuation_close(rows[symbol])
                 if not _positive(close):
                     raise LedgerError(f"missing closing valuation for filled {symbol} on {day}")
                 previous_close[symbol] = close
                 value = _money(position.quantity * close)
-                market_value += value
+                market_values[symbol] = value
                 position_rows.append((day, symbol, position.quantity, position.sellable(day), close, value))
         for event in record_events[day]:
             if event.symbol in positions:
                 entitled[event] = positions[event.symbol].quantity
-        market_value = _money(market_value)
+        market_value = _money(sum(market_values.values()))
         nav = _money(cash + market_value + receivable)
-        peak = max(peak, nav)
-        equity_rows.append((day, cash, market_value, receivable, nav,
-                            nav / last_nav - 1.0, 1.0 - nav / peak))
         if nav <= 0:
             raise LedgerError(f"non-positive account value on {day}")
+        peak = max(peak, nav)
+        drawdown = 1.0 - nav / peak
+        equity_rows.append((day, cash, market_value, receivable, nav,
+                            nav / last_nav - 1.0, drawdown))
         last_nav = nav
+        close_state = CloseState(
+            day=day,
+            weights=MappingProxyType({symbol: value / nav for symbol, value in market_values.items()}),
+            cash_weight=cash / nav,
+            drawdown=drawdown,
+            nav=nav,
+        )
+        if on_close is not None and index + 1 < len(days):
+            weights = on_close(close_state)
+            if weights is not None:
+                next_day = days[index + 1]
+                execution.update(_prepare_targets({next_day: weights}, {next_day}))
 
     return BacktestResult(
         pd.DataFrame(equity_rows, columns=_EQUITY),
         pd.DataFrame(order_rows, columns=_ORDERS),
         pd.DataFrame(position_rows, columns=_POSITIONS),
         pd.DataFrame(event_rows, columns=_EVENTS),
+        close_state,
     )
