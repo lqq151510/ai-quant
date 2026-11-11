@@ -84,9 +84,10 @@ def main() -> None:
     loaded_edges = storage.load_kg_edges()
 
     # 3. 零未来函数特征工程与严格时间切分 (含 Purge Gap 隔离带)
-    dataset = build_spatio_temporal_dataset(loaded_bars, seq_len=20, pred_horizon=3)
+    pred_horizon = 3
+    dataset = build_spatio_temporal_dataset(loaded_bars, seq_len=20, pred_horizon=pred_horizon)
     train_ds, val_ds, test_ds = chronological_split(
-        dataset, train_ratio=0.65, val_ratio=0.15, purge_gap=5
+        dataset, train_ratio=0.65, val_ratio=0.15, purge_gap=5, label_horizon=pred_horizon
     )
     print(
         f"[Step 3 | 时空特征张量] X={dataset.x_seq.shape} (含主力资金流CMF+上下行半方差) | "

@@ -68,45 +68,59 @@ def compute_ic_metrics(preds: np.ndarray, targets: np.ndarray) -> Tuple[float, f
     return ic_mean, float(np.mean(rank_ic_arr)), icir
 
 
+def path_metrics(port_rets: np.ndarray, bench_rets: np.ndarray) -> Tuple[float, float, float, float]:
+    """年化收益、基准、夏普和最大回撤。净值从 1 起算，避免首日亏损被记成 0 回撤."""
+    port_arr = np.asarray(port_rets, dtype=np.float64)
+    bench_arr = np.asarray(bench_rets, dtype=np.float64)
+    n_days = max(len(port_arr), 1)
+    ann_ret = float((np.prod(1.0 + port_arr) ** (252.0 / n_days)) - 1.0)
+    bench_ann = float((np.prod(1.0 + bench_arr) ** (252.0 / n_days)) - 1.0)
+    sharpe = float(np.mean(port_arr) / (np.std(port_arr) + 1e-8) * np.sqrt(252.0)) if len(port_arr) else 0.0
+    nav = np.concatenate(([1.0], np.cumprod(1.0 + port_arr))) if len(port_arr) else np.array([1.0])
+    peak = np.maximum.accumulate(nav)
+    max_drawdown = float(np.max((peak - nav) / np.maximum(peak, 1e-12)))
+    return ann_ret, bench_ann, sharpe, max_drawdown
+
+
+def _drift_weights(target_w: np.ndarray, asset_rets: np.ndarray) -> np.ndarray:
+    """调仓后的权重按当日涨跌变成下一交易日的实际持仓，不免费再平衡."""
+    grown = target_w * (1.0 + asset_rets)
+    gross = float(np.sum(grown))
+    if gross <= 1e-12:
+        return target_w.copy()
+    return grown / gross
+
+
 def backtest_top_k(
     preds: np.ndarray,
     real_next_rets: np.ndarray,
     top_k: int = 3,
     tx_cost: float = 0.0005,
 ) -> Tuple[float, float, float, float]:
-    """基于模型截面预测分数的 3日平滑 Top-K 轮动回测 (对齐 3日预测周期，降低无效换手摩擦)."""
+    """用 t 日信号赚下一开盘到再下一开盘的收益，非调仓日只保留价格漂移后的权重."""
     n_days, n_assets = preds.shape
-    prev_w = np.zeros(n_assets, dtype=np.float32)
-    ema_score = np.zeros(n_assets, dtype=np.float32)
+    prev_w = np.zeros(n_assets, dtype=np.float64)
+    ema_score = np.zeros(n_assets, dtype=np.float64)
     port_rets = []
     bench_rets = []
 
     for t in range(n_days):
-        # 3日指数移动平均平滑信号，与 pred_horizon=3 保持一致
-        ema_score = 0.5 * ema_score + 0.5 * preds[t] if t > 0 else preds[t].copy()
-        if t % 3 == 0 or t == 0:
+        ema_score = 0.5 * ema_score + 0.5 * preds[t] if t > 0 else preds[t].astype(np.float64)
+        if t % 3 == 0:
             top_idx = np.argsort(ema_score)[-top_k:]
-            target_w = np.zeros(n_assets, dtype=np.float32)
+            target_w = np.zeros(n_assets, dtype=np.float64)
             target_w[top_idx] = 1.0 / top_k
         else:
             target_w = prev_w
 
+        asset_rets = np.asarray(real_next_rets[t], dtype=np.float64)
         turnover = float(np.sum(np.abs(target_w - prev_w)))
-        net_r = float(np.dot(target_w, real_next_rets[t])) - turnover * tx_cost
+        net_r = float(np.dot(target_w, asset_rets)) - turnover * tx_cost
         port_rets.append(net_r)
-        bench_rets.append(float(np.mean(real_next_rets[t])))
-        prev_w = target_w
+        bench_rets.append(float(np.mean(asset_rets)))
+        prev_w = _drift_weights(target_w, asset_rets)
 
-    port_arr = np.array(port_rets)
-    bench_arr = np.array(bench_rets)
-    ann_ret = float((np.prod(1.0 + port_arr) ** (252.0 / max(n_days, 1))) - 1.0)
-    bench_ann = float((np.prod(1.0 + bench_arr) ** (252.0 / max(n_days, 1))) - 1.0)
-    sharpe = float(np.mean(port_arr) / (np.std(port_arr) + 1e-8) * np.sqrt(252.0))
-
-    nav = np.cumprod(1.0 + port_arr)
-    peak = np.maximum.accumulate(nav)
-    mdd = float(np.max((peak - nav) / peak))
-    return ann_ret, bench_ann, sharpe, mdd
+    return path_metrics(np.asarray(port_rets), np.asarray(bench_rets))
 
 
 def train_and_evaluate_alpha_model(
@@ -246,15 +260,7 @@ def train_and_eval_rl_portfolio(
     )
     eval_res = evaluate_ppo_agent(ppo_model, test_env)
 
-    port_arr = eval_res["net_rets"]
-    bench_arr = eval_res["bench_rets"]
-    n_days = len(port_arr)
-    ann_ret = float((np.prod(1.0 + port_arr) ** (252.0 / max(n_days, 1))) - 1.0)
-    bench_ann = float((np.prod(1.0 + bench_arr) ** (252.0 / max(n_days, 1))) - 1.0)
-    sharpe = float(np.mean(port_arr) / (np.std(port_arr) + 1e-8) * np.sqrt(252.0))
-    nav = np.cumprod(1.0 + port_arr)
-    peak = np.maximum.accumulate(nav)
-    mdd = float(np.max((peak - nav) / peak))
+    ann_ret, bench_ann, sharpe, mdd = path_metrics(eval_res["net_rets"], eval_res["bench_rets"])
     ic_mean, rank_ic, icir = compute_ic_metrics(test_alpha, test_ds.y_alpha)
 
     metrics = QuantEvalMetrics(
@@ -313,15 +319,7 @@ def train_and_eval_iql_hrp_hmm(
         test_vol_features=test_vol,
         hmm_max_exposures=hmm_max_exposures,
     )
-    port_arr = eval_res["net_rets"]
-    bench_arr = eval_res["bench_rets"]
-    n_days = len(port_arr)
-    ann_ret = float((np.prod(1.0 + port_arr) ** (252.0 / max(n_days, 1))) - 1.0)
-    bench_ann = float((np.prod(1.0 + bench_arr) ** (252.0 / max(n_days, 1))) - 1.0)
-    sharpe = float(np.mean(port_arr) / (np.std(port_arr) + 1e-8) * np.sqrt(252.0))
-    nav = np.cumprod(1.0 + port_arr)
-    peak = np.maximum.accumulate(nav)
-    mdd = float(np.max((peak - nav) / peak))
+    ann_ret, bench_ann, sharpe, mdd = path_metrics(eval_res["net_rets"], eval_res["bench_rets"])
     ic_mean, rank_ic, icir = compute_ic_metrics(test_alpha, test_ds.y_alpha)
 
     metrics = QuantEvalMetrics(

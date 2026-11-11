@@ -35,8 +35,8 @@ class SpatioTemporalDataset:
         dates: 有效样本交易日列表, 长度 T
         symbols: 资产代码列表, 长度 N (固定顺序)
         x_seq: 时序特征张量, shape = (T, N, L_window, F_features)
-        y_alpha: 未来 H 日截面标准化超额收益标签, shape = (T, N)
-        y_raw_ret: 未来 1 日真实单日简单收益率 (用于回测与 RL 结算), shape = (T, N)
+        y_alpha: 开盘到开盘持有期收益的截面标准化标签, shape = (T, N)
+        y_raw_ret: 信号日 t 收盘后、下一开盘买入并持有到再下一开盘的收益, shape = (T, N)
         micro_feats: 截面主力资金流与日内微结构特征张量, shape = (T, N, F_micro)
         collinearity_before: Löwdin 正交化前的截面特征平均非对角相关系数
         collinearity_after: Löwdin 正交化后的截面特征平均非对角相关系数
@@ -167,19 +167,34 @@ def compute_raw_feature_columns(bars_df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def attach_executable_open_returns(bars_df: pd.DataFrame, pred_horizon: int) -> pd.DataFrame:
+    """把每行信号映射成下一交易日开盘才能成交的持有收益.
+
+    t 日特征可以用当日收盘。收盘之后的第一笔可交易价格是下一日开盘，
+    一日结算为 open[t+2] / open[t+1] - 1，H 日标签为 open[t+1+H] / open[t+1] - 1。
+    这里不含公司行动；分红和份额变化仍由 research_v1 的份额账本处理。
+    """
+    if pred_horizon < 1:
+        raise ValueError("pred_horizon must be at least 1")
+    ordered = bars_df.sort_values(["symbol", "trade_date"]).copy()
+    grouped_open = ordered.groupby("symbol", sort=False)["open"]
+    entry = grouped_open.shift(-1)
+    one_day_exit = grouped_open.shift(-2)
+    horizon_exit = grouped_open.shift(-(pred_horizon + 1))
+    tradable = (entry > 0) & (one_day_exit > 0) & (horizon_exit > 0)
+    ordered["next_1d_ret"] = np.where(tradable, one_day_exit / entry - 1.0, np.nan)
+    ordered["future_ret_h"] = np.where(tradable, horizon_exit / entry - 1.0, np.nan)
+    return ordered
+
+
 def build_spatio_temporal_dataset(
     bars_df: pd.DataFrame,
     seq_len: int = 20,
     pred_horizon: int = 3,
 ) -> SpatioTemporalDataset:
-    """从日线表构建零未来函数泄漏的时空面板张量."""
-    df = compute_raw_feature_columns(bars_df)
+    """从日线表构建特征截至收盘、标签从下一开盘起算的时空面板."""
+    df = attach_executable_open_returns(compute_raw_feature_columns(bars_df), pred_horizon)
     symbols = sorted(df["symbol"].unique().tolist())
-    g = df.groupby("symbol", group_keys=False)
-
-    # 2. 计算预测目标：未来 pred_horizon 日累计收益率 & 次日真实单日收益率 (用于回测结算)
-    df["future_ret_h"] = g["close"].shift(-pred_horizon) / df["close"] - 1.0
-    df["next_1d_ret"] = g["close"].shift(-1) / df["close"] - 1.0
 
     # 剔除前 20 天滚动窗口预热期，防止预热期 NaN 污染截面标准化
     all_cols = FEATURE_COLUMNS + MICRO_FEATURE_COLUMNS
@@ -258,8 +273,11 @@ def chronological_split(
     train_ratio: float = 0.65,
     val_ratio: float = 0.15,
     purge_gap: int = 5,
+    label_horizon: int | None = None,
 ) -> Tuple[SpatioTemporalDataset, SpatioTemporalDataset, SpatioTemporalDataset]:
-    """严格按时间顺序切分训练集、验证集、测试集，并在边界加入 Purge Gap 防止预测窗口重叠泄漏."""
+    """按时间切分，并丢掉边界上标签尚未结束的样本."""
+    if label_horizon is not None and purge_gap < label_horizon + 1:
+        raise ValueError("purge_gap must be at least label_horizon + 1")
     total = len(dataset.dates)
     t_train = int(total * train_ratio)
     t_val = int(total * (train_ratio + val_ratio))
