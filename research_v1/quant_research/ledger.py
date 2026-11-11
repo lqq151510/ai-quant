@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from decimal import Decimal, ROUND_HALF_UP
 from math import floor, isfinite
+from types import MappingProxyType
 
 import pandas as pd
 
@@ -163,6 +164,17 @@ class BacktestResult:
     orders: pd.DataFrame
     positions: pd.DataFrame
     cash_events: pd.DataFrame
+
+
+@dataclass(frozen=True)
+class CloseState:
+    """End-of-session account state after fills, corporate actions and valuation."""
+
+    date: date
+    nav: float
+    cash: float
+    drawdown: float
+    weights: Mapping[str, float]
 
 
 def _require_columns(frame: pd.DataFrame, names: Sequence[str], label: str) -> None:
@@ -380,11 +392,14 @@ def simulate(
     *,
     initial_cash: float,
     cost: Costs = Costs(),
+    close_policy: Callable[[CloseState], Mapping[str, float] | None] | None = None,
 ) -> BacktestResult:
-    """Simulate precomputed opening target weights on a supplied exchange calendar.
+    """Simulate opening target weights on a supplied exchange calendar.
 
-    The caller is responsible for shifting decisions to the next session and
-    verifying corporate action coverage. Open prices approximate executable
+    Static targets are keyed by execution date. Alternatively, a close policy
+    receives the marked account and schedules its targets for the next open.
+    A policy can return None to skip or an empty mapping to exit all positions.
+    The caller verifies corporate action coverage. Open prices approximate executable
     liquidity. Limits, explicit halts, and absent prices can prevent fills.
     Stock ETF trading is the secondary market case only. Dividends are credited
     at the supplied cash per share, on the first session on or after payment.
@@ -394,6 +409,8 @@ def simulate(
     days = [_date(day) for day in calendar]
     if not days or days != sorted(set(days)):
         raise LedgerError("calendar must be non-empty, unique and increasing")
+    if close_policy is not None and targets:
+        raise LedgerError("close policy cannot be combined with static execution targets")
     execution = _prepare_targets(targets, set(days))
     groups = _prepare_bars(bars).groupby("date", sort=False)
     event_data = _prepare_actions(actions, days)
@@ -408,7 +425,7 @@ def simulate(
     equity_rows, order_rows, position_rows, event_rows = [], [], [], []
     cash = peak = last_nav = _money(initial_cash)
 
-    for day in days:
+    for i, day in enumerate(days):
         rows = {}
         if day in groups.indices:
             rows = {row.symbol: row for row in groups.get_group(day).itertuples(index=False)}
@@ -464,7 +481,7 @@ def simulate(
                     )
             cash = _rebalance(day, execution[day], rows, positions, opening_reference,
                               cash, receivable, cost, order_rows)
-        market_value = 0.0
+        position_values = {}
         for symbol, position in sorted(positions.items()):
             if position.quantity:
                 close = rows[symbol].close
@@ -472,19 +489,26 @@ def simulate(
                     raise LedgerError(f"missing closing valuation for filled {symbol} on {day}")
                 previous_close[symbol] = close
                 value = _money(position.quantity * close)
-                market_value += value
+                position_values[symbol] = value
                 position_rows.append((day, symbol, position.quantity, position.sellable(day), close, value))
         for event in record_events[day]:
             if event.symbol in positions:
                 entitled[event] = positions[event.symbol].quantity
-        market_value = _money(market_value)
+        market_value = _money(sum(position_values.values()))
         nav = _money(cash + market_value + receivable)
         peak = max(peak, nav)
+        drawdown = 1.0 - nav / peak
         equity_rows.append((day, cash, market_value, receivable, nav,
-                            nav / last_nav - 1.0, 1.0 - nav / peak))
+                            nav / last_nav - 1.0, drawdown))
         if nav <= 0:
             raise LedgerError(f"non-positive account value on {day}")
         last_nav = nav
+        if close_policy is not None and i + 1 < len(days):
+            weights = MappingProxyType({symbol: value / nav for symbol, value in position_values.items()})
+            next_targets = close_policy(CloseState(day, nav, cash, drawdown, weights))
+            if next_targets is not None:
+                next_day = days[i + 1]
+                execution.update(_prepare_targets({next_day: next_targets}, {next_day}))
 
     return BacktestResult(
         pd.DataFrame(equity_rows, columns=_EQUITY),

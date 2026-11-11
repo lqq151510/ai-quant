@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from functools import wraps
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
 import torch
 
+from src.application import walk_forward_engine
 from src.application.walk_forward_engine import (
     apply_turnover_deadband,
     build_open_to_open_panel,
@@ -161,7 +164,7 @@ class BitemporalAndWalkForwardTests(unittest.TestCase):
         self.assertEqual(tuple(out.shape), (4, 3))
         self.assertTrue(torch.isfinite(out).all())
 
-    def test_walk_forward_ablation_reconciles_on_share_ledger(self) -> None:
+    def test_walk_forward_targets_and_risk_caps_ignore_future_bars(self) -> None:
         rng = np.random.default_rng(123)
         dates = pd.bdate_range("2023-01-02", periods=130)
         symbols = ("510050", "510300", "510500")
@@ -203,21 +206,82 @@ class BitemporalAndWalkForwardTests(unittest.TestCase):
         panel = build_open_to_open_panel(bars_df, dates, actions_df, bundle, horizon=5, seq_len=20)
         self.assertGreater(len(panel.dates), 60)
 
-        res = run_walk_forward_ablation_experiment(
-            bars_df=bars_df,
-            calendar_dates=dates,
-            actions_df=actions_df,
-            kg_bundle=bundle,
-            base_edges_df=edges_df,
-            horizon=5,
-            top_k=2,
-            initial_cash=50_000.0,
-            min_train_sessions=35,
-            val_sessions=15,
-            oos_step_sessions=25,
-            epochs_per_fold=2,
-            ppo_seeds=(42, 101),
-        )
+        def run_and_capture(bars):
+            policy_history = []
+            risk_caps = {}
+            simulate = walk_forward_engine.simulate
+            generate_stream = walk_forward_engine.generate_walk_forward_oos_stream
+
+            def capture_stream(*args, **kwargs):
+                stream = generate_stream(*args, **kwargs)
+                risk_caps.update(zip(stream.dates, stream.oos_hmm_exposure, strict=True))
+                return stream
+
+            def capture_policy(*args, **kwargs):
+                close_policy = kwargs.get("close_policy")
+                if close_policy is not None:
+                    history = {}
+                    policy_history.append(history)
+
+                    def observe(state):
+                        target = close_policy(state)
+                        history[pd.Timestamp(state.date)] = None if target is None else dict(target)
+                        return target
+
+                    kwargs["close_policy"] = observe
+                return simulate(*args, **kwargs)
+
+            with (
+                patch.object(walk_forward_engine, "simulate", side_effect=capture_policy),
+                patch.object(walk_forward_engine, "generate_walk_forward_oos_stream", side_effect=capture_stream),
+                patch.object(torch.backends.mps, "is_available", wraps(torch.backends.mps.is_available)(lambda: False)),
+            ):
+                report = run_walk_forward_ablation_experiment(
+                    bars_df=bars,
+                    calendar_dates=dates,
+                    actions_df=actions_df,
+                    kg_bundle=bundle,
+                    base_edges_df=edges_df,
+                    horizon=5,
+                    top_k=2,
+                    initial_cash=50_000.0,
+                    min_train_sessions=35,
+                    val_sessions=15,
+                    oos_step_sessions=25,
+                    epochs_per_fold=2,
+                    ppo_seeds=(42, 101),
+                )
+            return report, risk_caps, policy_history
+
+        res, caps, history = run_and_capture(bars_df)
+        self.assertEqual(len(history), 12)
+        cutoff = sorted(history[0])[5]
+        perturbed = bars_df.copy()
+        future = perturbed["date"].gt(cutoff) & perturbed["symbol"].eq("510500")
+        price_columns = ["open", "high", "low", "close", "preclose", "lower_limit", "upper_limit"]
+        perturbed.loc[future, price_columns] *= 1.06
+        perturbed.loc[perturbed.index[future][0], "preclose"] = np.nan
+        _, perturbed_caps, perturbed_history = run_and_capture(perturbed)
+        self.assertEqual(caps.keys(), perturbed_caps.keys())
+        for day, cap in caps.items():
+            if day <= cutoff:
+                self.assertAlmostEqual(cap, perturbed_caps[day], places=10)
+        self.assertTrue(any(abs(cap - perturbed_caps[day]) > 1e-6 for day, cap in caps.items() if day > cutoff))
+        for policy, perturbed_policy in zip(history, perturbed_history, strict=True):
+            self.assertEqual(policy.keys(), perturbed_policy.keys())
+            self.assertIsNotNone(policy[min(policy)])
+            for day, target in policy.items():
+                if day > cutoff:
+                    break
+                other = perturbed_policy[day]
+                if target is None:
+                    self.assertIsNone(other)
+                else:
+                    self.assertIsNotNone(other)
+                    self.assertEqual(target.keys(), other.keys())
+                    for symbol, weight in target.items():
+                        self.assertAlmostEqual(weight, other[symbol], places=7)
+
         normal_ledgers = res["share_ledger_ablation"]["normal"]
         for key in ("equal_weight", "wf_stage2_bitemporal_kg_gat", "wf_hrp_cqr_hmm", "rl_rule_prior_only", "rl_offline_iql"):
             self.assertLess(normal_ledgers[key]["ledger_reconciliation_error"], 1e-6)
@@ -249,6 +313,11 @@ class BitemporalAndWalkForwardTests(unittest.TestCase):
         self.assertAlmostEqual(float(feat.loc[26, "ret_5d"]), 0.0, places=9)
         self.assertAlmostEqual(float(feat.loc[28, "ret_20d"]), 0.0, places=9)
         self.assertAlmostEqual(float(feat.loc[28, "ma_bias_20"]), 0.0, places=6)
+        # 一条未来坏参考价不能把此前的份额拆分重新解释成暴跌。
+        df.loc[29, "preclose"] = np.nan
+        with_future_gap = compute_raw_feature_columns(df)
+        pd.testing.assert_frame_equal(feat.loc[:28], with_future_gap.loc[:28], check_exact=True)
+        self.assertAlmostEqual(float(with_future_gap.loc[29, "ret_1d_raw"]), 0.0, places=9)
 
     def test_hysteresis_buffer_and_turnover_deadband_suppress_micro_churn(self) -> None:
         # 标的 1 已持仓且分数排第 3 (位于 Top-M 缓冲带内)，即使标的 0/2 分数略高也应保留已持仓标的

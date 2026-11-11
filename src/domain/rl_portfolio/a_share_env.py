@@ -26,16 +26,29 @@ class ASharePortfolioEnv(gym.Env):
         sell_cost: float = 0.0008,
         dd_penalty_weight: float = 2.5,
         dd_threshold: float = 0.03,
+        *,
+        overnight_rets: np.ndarray | None = None,
+        rebalance_interval: int = 3,
     ) -> None:
         super().__init__()
-        assert len(alpha_preds) == len(real_next_rets)
+        if isinstance(rebalance_interval, bool) or not isinstance(rebalance_interval, int) or rebalance_interval < 1:
+            raise ValueError("rebalance_interval must be a positive integer")
+        self.rebalance_interval = rebalance_interval
+        if overnight_rets is None:
+            assert len(alpha_preds) == len(real_next_rets)
+        else:
+            # 第 t 行包含信号日收盘至下一交易日收盘的两个结算阶段。
+            for leg in (overnight_rets, real_next_rets):
+                if leg.shape != alpha_preds.shape or not np.all(np.isfinite(leg) & (leg > -1.0)):
+                    raise ValueError("overnight and intraday returns must match alpha shape and be finite and greater than -1")
+        self.overnight_rets = None if overnight_rets is None else overnight_rets.astype(np.float64)
         # 对齐 3 日预测周期做 EMA 信号平滑，消除单日高频噪音导致的无效换手
         smoothed = np.zeros_like(alpha_preds, dtype=np.float32)
         for t in range(len(alpha_preds)):
             smoothed[t] = 0.5 * smoothed[t - 1] + 0.5 * alpha_preds[t] if t > 0 else alpha_preds[t]
         self.alpha_preds = smoothed
         self.vol_features = vol_features.astype(np.float32)
-        self.real_next_rets = real_next_rets.astype(np.float32)
+        self.real_next_rets = real_next_rets.astype(np.float32 if overnight_rets is None else np.float64)
 
         self.n_steps, self.n_assets = self.alpha_preds.shape
         self.buy_cost = buy_cost
@@ -88,7 +101,8 @@ class ASharePortfolioEnv(gym.Env):
         raw_target_cash = float(raw_alloc[-1])
 
         # 对齐波段调仓周期：结合 Alpha 预测、RL 策略动作 Logits 与当前持仓惯性缓冲选股
-        if self.step_idx % 3 == 0 or np.sum(self.weights) < 1e-5:
+        rebalance = False
+        if self.step_idx % self.rebalance_interval == 0 or np.sum(self.weights) < 1e-5:
             k_pick = min(3, self.n_assets)
             composite_score = (
                 0.60 * self.alpha_preds[self.step_idx]
@@ -111,34 +125,47 @@ class ASharePortfolioEnv(gym.Env):
             else:
                 target_w = proposed_w
                 target_cash = base_cash
+                rebalance = True
         else:
             target_w = self.weights.copy()
             target_cash = self.cash_weight
 
-        # 计算换手与 A 股非对称买卖摩擦成本
-        delta_w = target_w - self.weights
+        asset_rets = self.real_next_rets[self.step_idx]
+        opening_w = self.weights
+        opening_growth = 1.0
+        overnight = None if self.overnight_rets is None else self.overnight_rets[self.step_idx]
+        if overnight is not None:
+            # 旧仓承担隔夜收益，收盘决策在下一开盘才生效。
+            opening_values = self.weights * (1.0 + overnight)
+            opening_growth = float(np.sum(opening_values)) + self.cash_weight
+            opening_w = opening_values / opening_growth
+            if not rebalance:
+                target_w = opening_w
+                target_cash = self.cash_weight / opening_growth
+
+        delta_w = target_w - opening_w
         buy_turnover = float(np.sum(np.maximum(delta_w, 0.0)))
         sell_turnover = float(np.sum(np.maximum(-delta_w, 0.0)))
         tx_cost = buy_turnover * self.buy_cost + sell_turnover * self.sell_cost
 
-        # 结算当日真实组合收益
-        asset_rets = self.real_next_rets[self.step_idx]
-        gross_ret = float(np.dot(target_w, asset_rets))
-        net_ret = gross_ret - tx_cost
+        post_values = target_w * (1.0 + asset_rets)
+        total_val = float(np.sum(post_values)) + target_cash
+        if overnight is None:
+            # 兼容原有单段收益环境。
+            net_ret = float(np.dot(target_w, asset_rets)) - tx_cost
+            bench_ret = float(np.mean(asset_rets))
+        else:
+            # 摩擦按开盘权益计提，剩余资金按目标权重分配后承担日内收益。
+            net_ret = opening_growth * (1.0 - tx_cost) * total_val - 1.0
+            bench_ret = float(np.mean((1.0 + overnight) * (1.0 + asset_rets) - 1.0))
 
-        # 更新净值与回撤
         self.nav *= (1.0 + net_ret)
         self.peak_nav = max(self.peak_nav, self.nav)
         drawdown = (self.peak_nav - self.nav) / self.peak_nav
-
-        # 价格变动后的自然漂移权重更新
-        post_values = target_w * (1.0 + asset_rets)
-        total_val = float(np.sum(post_values)) + target_cash
         self.weights = (post_values / max(total_val, 1e-8)).astype(np.float32)
         self.cash_weight = float(target_cash / max(total_val, 1e-8))
 
         # 奖励塑形: 净超额收益 - 强化换手惩罚 - 超阈值回撤二次方惩罚
-        bench_ret = float(np.mean(asset_rets))
         excess_ret = net_ret - 0.7 * bench_ret
         dd_excess = max(0.0, drawdown - self.dd_threshold)
         reward = float(

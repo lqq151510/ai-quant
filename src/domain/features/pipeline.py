@@ -106,17 +106,16 @@ def compute_raw_feature_columns(bars_df: pd.DataFrame) -> pd.DataFrame:
     df = bars_df.sort_values(["symbol", "trade_date"]).copy()
     g = df.groupby("symbol", group_keys=False)
 
-    # 若含交易所 preclose，使用 close / preclose 构造 100% 因果链式真实收益与复权价格序列，消除分红/份额折算伪跳变
-    if "preclose" in df.columns and (df["preclose"] > 0).all():
-        df["ret_1d_raw"] = (df["close"] / df["preclose"]) - 1.0
-        # 严格仅累乘历史日真实收益率 (零未来函数)
-        df["_causal_adj_price"] = g["ret_1d_raw"].transform(lambda s: (1.0 + s.fillna(0.0)).cumprod())
-        price_col = "_causal_adj_price"
-        df["_overnight_1d"] = (df["open"] / df["preclose"]) - 1.0
-    else:
-        df["ret_1d_raw"] = g["close"].pct_change(1)
-        price_col = "close"
-        df["_overnight_1d"] = (df["open"] / g["close"].shift(1)) - 1.0
+    # 逐行使用当日参考价。缺值只影响该行，未来坏值不会切换历史复权口径。
+    reference = g["close"].shift()
+    if "preclose" in df:
+        preclose = df["preclose"]
+        reference = preclose.where(np.isfinite(preclose) & preclose.gt(0), reference)
+    reference = reference.where(np.isfinite(reference) & reference.gt(0))
+    df["ret_1d_raw"] = df["close"].div(reference) - 1.0
+    df["_overnight_1d"] = df["open"].div(reference) - 1.0
+    price_col = "_causal_adj_price"
+    df[price_col] = g["ret_1d_raw"].transform(lambda s: (1.0 + s.fillna(0.0)).cumprod())
 
     df["ret_3d"] = g[price_col].pct_change(3)
     df["ret_5d"] = g[price_col].pct_change(5)

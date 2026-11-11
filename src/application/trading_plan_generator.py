@@ -15,6 +15,7 @@ from src.domain.features.pipeline import (
     lowdin_symmetric_orthogonalize,
 )
 from src.domain.portfolio.hrp import HierarchicalRiskParityOptimizer
+from src.domain.portfolio.stock_limits import MAX_STOCK_HOLDINGS_SHARE, MAX_STOCK_NAV_WEIGHT, limit_stock_weights
 from src.domain.regime.market_hmm import MarketRegimeSnapshot
 from src.domain.rl_portfolio.ppo_agent import build_alpha_risk_prior
 from src.infrastructure.market_data import CORE_UNIVERSE
@@ -154,15 +155,15 @@ def generate_semi_auto_trading_plan(
     hmm_cap = latest_regime.recommended_max_exposure if latest_regime is not None else 0.75
     if global_tech_shock:
         hmm_cap = min(hmm_cap, 0.70)
+    if not np.isfinite(hmm_cap) or not 0.0 <= hmm_cap <= 1.0:
+        raise ValueError("recommended_max_exposure must be finite and between 0 and 1")
 
     if eligible_sorted and hist_raw_rets is not None and len(hist_raw_rets) >= 20:
-        hrp_unit_w = HierarchicalRiskParityOptimizer.allocate_hrp_weights(
+        asset_weights = HierarchicalRiskParityOptimizer.allocate_hrp_weights(
             hist_returns=hist_raw_rets[-45:],
             candidate_indices=eligible_sorted,
             alpha_tilts=composite_alpha,
-        )
-        asset_weights = hrp_unit_w * hmm_cap
-        cash_reserve = 1.0 - float(np.sum(asset_weights))
+        ) * hmm_cap
     else:
         shock_dd_proxy = 0.045 if global_tech_shock else 0.015
         dummy_obs = np.concatenate([
@@ -175,11 +176,22 @@ def generate_semi_auto_trading_plan(
         for i, sym in enumerate(symbols):
             row = snap_df[snap_df["symbol"] == sym].iloc[0]
             if sym in circuit_breaker_flags or float(row["close"]) < float(row["ma_20"]):
-                alloc_logits[i] = -1e4
+                alloc_logits[i] = -np.inf
         exp_a = np.exp(alloc_logits - np.max(alloc_logits))
         alloc_weights = exp_a / np.sum(exp_a)
         asset_weights = alloc_weights[:n_assets]
-        cash_reserve = float(alloc_weights[-1])
+
+    meta_map = {a.symbol: a for a in CORE_UNIVERSE}
+    stock_mask = np.array([meta_map[symbol].kind == "stock" for symbol in symbols])
+    capped_weights = np.asarray(asset_weights, dtype=float)
+    gross_before_cap = float(capped_weights.sum())
+    if gross_before_cap > hmm_cap:
+        capped_weights = capped_weights * (hmm_cap / gross_before_cap)
+    asset_weights = limit_stock_weights(capped_weights, stock_mask)
+    cash_reserve = max(0.0, 1.0 - float(asset_weights.sum()))
+    cuts = [f"{symbol} {before:.2%}→{after:.2%}" for symbol, before, after in
+            zip(symbols, capped_weights, asset_weights) if before - after > 1e-12]
+    stock_limit_result = "、".join(cuts) if cuts else "无个股权重截断"
 
     # 整理最新新闻摘要映射
     latest_news_map: Dict[str, str] = {}
@@ -187,7 +199,6 @@ def generate_semi_auto_trading_plan(
         for sym, grp in news_df.groupby("symbol"):
             latest_news_map[str(sym)] = str(grp.iloc[0]["title"])[:36]
 
-    meta_map = {a.symbol: a for a in CORE_UNIVERSE}
     plan_rows = []
     for i, sym in enumerate(symbols):
         row = snap_df[snap_df["symbol"] == sym].iloc[0]
@@ -206,6 +217,8 @@ def generate_semi_auto_trading_plan(
 
         if sym in circuit_breaker_flags:
             action = circuit_breaker_flags[sym]
+        elif w == 0:
+            action = "⏸️ 暂不配置"
         elif w >= 0.05:
             action = "🔥 主力建仓/持有"
         elif close_p >= ma20:
@@ -230,7 +243,7 @@ def generate_semi_auto_trading_plan(
             "sent_score": float(adjusted_sent[i]),
             "target_weight": w,
             "action": action,
-            "buy_zone": f"{buy_low:.3f} ~ {buy_high:.3f}",
+            "buy_zone": f"{buy_low:.3f} ~ {buy_high:.3f}" if w > 0 else "--",
             "stop_loss": f"{stop_loss:.3f} (-{(close_p - stop_loss) / close_p * 100:.1f}%)",
             "take_profit": f"{take_profit:.3f} (+{(take_profit - close_p) / close_p * 100:.1f}%)",
             "trend": trend_tag,
@@ -255,6 +268,8 @@ def generate_semi_auto_trading_plan(
         f"- **决策引擎**: `Löwdin对称正交化` + `Stage 2B (GBDT + KG-GAT)` + `Conformal 分位数区间校准` + `Sticky-HMM + Wasserstein最优传输` + `HRP + Offline IQL`",
         f"- **Sticky-HMM + Wasserstein 市场状态识别**: {regime_desc}",
         f"- **HRP+HMM 建议账户总仓位**: **{(1.0 - cash_reserve) * 100:.1f}%** | **建议现金防守仓位**: **{cash_reserve * 100:.1f}%**",
+        f"- **目标权益上限 {hmm_cap:.0%}**，截断前总仓位 {gross_before_cap:.2%}。",
+        f"- **每次生成计划均复核个股集中度**。单只股票最多占总净值 {MAX_STOCK_NAV_WEIGHT:.0%}、目标持仓市值 {MAX_STOCK_HOLDINGS_SHARE:.0%}。{stock_limit_result}。释放份额留现金。表中仓位按显示精度舍入，风控按未舍入的目标权重计算。",
         f"- **A股 T+1 执行铁律**: 严禁盘中追高超过买入区间上限；跌破 2×ATR 硬止损红线次日无条件纪律止损。",
         "",
         "## 一、 截面 Alpha 排序与次日操作指令表",

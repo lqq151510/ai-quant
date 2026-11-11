@@ -21,7 +21,8 @@ import hashlib
 import json
 import random
 import sys
-from dataclasses import asdict, dataclass
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -39,7 +40,8 @@ _RESEARCH_V1 = _REPO_ROOT / "research_v1"
 if str(_RESEARCH_V1) not in sys.path:
     sys.path.insert(0, str(_RESEARCH_V1))
 
-from quant_research.ledger import Costs, normalize_actions, simulate  # noqa: E402
+from quant_research.baseline import market_close_returns  # noqa: E402
+from quant_research.ledger import CloseState, Costs, normalize_actions, simulate  # noqa: E402
 from quant_research.risk import block_resample, summarize  # noqa: E402
 from quant_research.timeline import execution_schedule, open_labels, purge_training, sessions  # noqa: E402
 
@@ -58,17 +60,20 @@ from src.domain.kg_gnn.bitemporal_kg_bridge import (  # noqa: E402
 )
 from src.domain.kg_gnn.graph_model import SpatioTemporalKGAlphaModel, build_hybrid_kg_adjacency  # noqa: E402
 from src.domain.portfolio.hrp import HierarchicalRiskParityOptimizer  # noqa: E402
+from src.domain.portfolio.stock_limits import (  # noqa: E402
+    MAX_STOCK_HOLDINGS_SHARE,
+    MAX_STOCK_NAV_WEIGHT,
+    limit_stock_weights,
+)
 from src.domain.regime.market_hmm import StickyMarketRegimeHMM  # noqa: E402
 from src.domain.rl_portfolio.a_share_env import ASharePortfolioEnv  # noqa: E402
-from src.domain.rl_portfolio.offline_iql import IQLNetworks, train_offline_iql_agent  # noqa: E402
+from src.domain.rl_portfolio.offline_iql import train_offline_iql_agent  # noqa: E402
 from src.domain.rl_portfolio.ppo_agent import (  # noqa: E402
-    PPOPortfolioActorCritic,
     build_alpha_risk_prior,
     train_ppo_portfolio_agent,
 )
 from src.domain.timeseries_dl.losses import CrossSectionalICLoss  # noqa: E402
 from src.domain.uncertainty.quantile_conformal import fit_and_calibrate_conformal_quantile  # noqa: E402
-from src.infrastructure.market_data import build_initial_kg_edges  # noqa: E402
 
 PPO_SEEDS: Tuple[int, ...] = (42, 101, 202, 303, 404)
 
@@ -113,9 +118,9 @@ class OpenToOpenPanelDataset:
     x_seq: np.ndarray            # (T, N, L, F_total)
     y_open_ret_h: np.ndarray     # (T, N) 从 t+1 开盘至 t+h+1 开盘的含分红折算真实持有收益率
     y_alpha_z: np.ndarray        # (T, N) 截面 MAD Z-Score 标准化后的超额收益标签
-    y_next_open_ret: np.ndarray  # (T, N) 单步开盘到开盘近似收益 (仅供 RL 内部轻量步进奖励训练，最终评估一律走真实份额账本)
     vol_feats: np.ndarray        # (T, N) 截面波动率特征
     dynamic_adj: np.ndarray      # (T, N, N) 双时点 Bitemporal 显式邻接矩阵序列
+    close_returns: pd.DataFrame  # 完整交易日历上的已实现收盘收益，仅供风控输入
 
 
 def build_open_to_open_panel(
@@ -138,6 +143,8 @@ def build_open_to_open_panel(
     feat_df = compute_raw_feature_columns(bars)
     symbols = sorted(feat_df["symbol"].unique().tolist())
     n_assets = len(symbols)
+    observed_bars = bars.assign(close=bars["close"].where(bars["close"].gt(0)))
+    close_returns = market_close_returns(observed_bars, actions_df, cal_idx).reindex(columns=symbols)
 
     # 2. 调用 research_v1.timeline.open_labels 计算严格含分红与份额折算的 Open(t+1) -> Open(t+h+1) 标签
     labels_h = open_labels(bars, cal_idx, horizon=horizon, actions=actions_df)
@@ -150,37 +157,12 @@ def build_open_to_open_panel(
         how="left",
     )
 
-    # 计算 Open(t+1) -> Open(t+2) 单日开盘真实收益 (含除息调整) 供 RL 训练轨迹奖励塑形
-    norm_acts = normalize_actions(actions_df, cal_idx)
-    act_map: Dict[Tuple[str, pd.Timestamp], Tuple[float, float]] = {}
-    for row in norm_acts.itertuples(index=False):
-        act_map[(str(row.symbol), pd.Timestamp(row.ex_date).normalize())] = (
-            float(row.cash_per_share),
-            float(row.share_multiplier),
-        )
-
-    next_open_rets = []
-    for sym, grp in feat_df.groupby("symbol", sort=False):
-        opens = grp["open"].to_numpy(dtype=np.float64)
-        dts = pd.to_datetime(grp["date"]).dt.normalize().tolist()
-        r_1d = np.full(len(grp), np.nan, dtype=np.float64)
-        for i in range(len(grp) - 2):
-            p_in = opens[i + 1]
-            p_out = opens[i + 2]
-            ex_dt = dts[i + 2]
-            cash_div, mult = act_map.get((str(sym), ex_dt), (0.0, 1.0))
-            if p_in > 0 and p_out > 0:
-                r_1d[i] = (p_out * mult + cash_div) / p_in - 1.0
-        next_open_rets.append(pd.Series(r_1d, index=grp.index))
-    feat_df["next_open_1d"] = pd.concat(next_open_rets).sort_index()
-
     all_feat_cols = FEATURE_COLUMNS + MICRO_FEATURE_COLUMNS
     # 仅剔除前 20 日滚动窗口预热期与末尾无 label_end 日期；单只停牌股不丢弃整日截面！
     feat_df = feat_df.dropna(subset=all_feat_cols + ["label_end"]).copy()
     feat_df["target_return"] = feat_df.groupby("date")["target_return"].transform(
         lambda s: s.fillna(s.median() if s.notna().any() else 0.0)
     )
-    feat_df["next_open_1d"] = feat_df["next_open_1d"].fillna(0.0)
 
     # 3. 单日截面 MAD 去极值 + Z-Score 标准化
     for col in all_feat_cols:
@@ -213,12 +195,11 @@ def build_open_to_open_panel(
 
     y_open_cube = feat_df["target_return"].to_numpy(dtype=np.float32).reshape(n_valid, n_assets)
     y_alpha_cube = feat_df["target_alpha_z"].to_numpy(dtype=np.float32).reshape(n_valid, n_assets)
-    y_next1d_cube = feat_df["next_open_1d"].to_numpy(dtype=np.float32).reshape(n_valid, n_assets)
     label_end_series = feat_df.groupby("date")["label_end"].first().loc[valid_dates].tolist()
 
     # 5. 滑动窗口构造 (T_seq, N, seq_len, F_total)
     x_seq_list, out_dates, out_label_ends = [], [], []
-    y_open_list, y_alpha_list, y_next1d_list, vol_list, adj_list = [], [], [], [], []
+    y_open_list, y_alpha_list, vol_list, adj_list = [], [], [], []
     for t in range(seq_len - 1, n_valid):
         window = np.transpose(full_cube[t - seq_len + 1 : t + 1], (1, 0, 2))  # (N, L, F_total)
         x_seq_list.append(window)
@@ -226,7 +207,6 @@ def build_open_to_open_panel(
         out_label_ends.append(pd.Timestamp(label_end_series[t]))
         y_open_list.append(y_open_cube[t])
         y_alpha_list.append(y_alpha_cube[t])
-        y_next1d_list.append(y_next1d_cube[t])
         vol_list.append(base_cube[t, :, 7])  # vol_ratio_5_20 截面波动指标
         adj_list.append(dyn_adj_all[t])
 
@@ -237,9 +217,9 @@ def build_open_to_open_panel(
         x_seq=np.stack(x_seq_list, axis=0),
         y_open_ret_h=np.stack(y_open_list, axis=0),
         y_alpha_z=np.stack(y_alpha_list, axis=0),
-        y_next_open_ret=np.stack(y_next1d_list, axis=0),
         vol_feats=np.stack(vol_list, axis=0),
         dynamic_adj=np.stack(adj_list, axis=0),
+        close_returns=close_returns,
     )
 
 
@@ -404,36 +384,35 @@ class WalkForwardOOSStream:
     oos_hmm_exposure: List[float]  # 长度 T_oos
     y_open_ret_h: np.ndarray       # (T_oos, N)
     y_alpha_z: np.ndarray          # (T_oos, N)
-    y_next_open_ret: np.ndarray    # (T_oos, N)
     vol_feats: np.ndarray          # (T_oos, N)
     fold_boundaries: List[Dict[str, str]]
 
 
 def _build_macro_df_from_panel_returns(dates: Sequence[pd.Timestamp], rets_mat: np.ndarray) -> pd.DataFrame:
-    """从截面日收益矩阵 (T, N) 构建供 StickyMarketRegimeHMM 因果滤波的宏观观测序列 (含 1D Wasserstein)."""
+    """用截至当日收盘已实现的日收益构造市场状态观测。"""
     from src.domain.regime.market_hmm import compute_1d_wasserstein_w2
 
-    mkt_ret_1d = np.mean(rets_mat, axis=1)
-    cross_disp = np.std(rets_mat, axis=1) + 1e-6
-    s_ret = pd.Series(mkt_ret_1d)
+    observed = pd.DataFrame(np.where(np.isfinite(rets_mat), rets_mat, np.nan))
+    s_ret = observed.mean(axis=1).fillna(0.0)
+    cross_disp = observed.std(axis=1, ddof=0).fillna(0.0).to_numpy() + 1e-6
     mkt_ret_5d = s_ret.rolling(5, min_periods=1).mean().to_numpy()
-    mkt_vol_10d = s_ret.rolling(10, min_periods=2).std().bfill().fillna(0.01).to_numpy()
+    mkt_vol_10d = s_ret.rolling(10, min_periods=2).std().fillna(0.01).to_numpy()
 
     w2_list, left_shift_list = [], []
     for t in range(len(dates)):
-        if t < 20:
-            w2_list.append(0.008)
-            left_shift_list.append(0.0)
-        else:
+        w2, l_shift = 0.008, 0.0
+        if t >= 20:
             recent = rets_mat[max(0, t - 4) : t + 1].reshape(-1)
-            ref = rets_mat[max(0, t - 45) : max(1, t - 4)].reshape(-1)
-            w2, l_shift = compute_1d_wasserstein_w2(recent, ref)
-            w2_list.append(w2)
-            left_shift_list.append(l_shift)
+            ref = rets_mat[max(0, t - 45) : t - 4].reshape(-1)
+            recent, ref = recent[np.isfinite(recent)], ref[np.isfinite(ref)]
+            if recent.size and ref.size:
+                w2, l_shift = compute_1d_wasserstein_w2(recent, ref)
+        w2_list.append(w2)
+        left_shift_list.append(l_shift)
 
     return pd.DataFrame({
         "trade_date": list(dates),
-        "mkt_ret_1d": mkt_ret_1d,
+        "mkt_ret_1d": s_ret.to_numpy(),
         "mkt_ret_5d": mkt_ret_5d,
         "mkt_vol_10d": mkt_vol_10d,
         "cross_dispersion": cross_disp,
@@ -465,7 +444,9 @@ def generate_walk_forward_oos_stream(
         "date": panel.dates,
         "label_end": panel.label_end_dates,
     })
-    macro_all_df = _build_macro_df_from_panel_returns(panel.dates, panel.y_next_open_ret)
+    macro_all_df = _build_macro_df_from_panel_returns(
+        panel.close_returns.index, panel.close_returns.to_numpy()
+    ).set_index("trade_date", drop=False)
 
     oos_indices: List[int] = []
     oos_alpha_chunks: List[np.ndarray] = []
@@ -510,10 +491,10 @@ def generate_walk_forward_oos_stream(
 
         # 在当前折叠的历史观测上拟合 Sticky-HMM + 1D Wasserstein，并因果前向滤波 OOS 折叠
         hmm = StickyMarketRegimeHMM(self_transition_prob=0.82, random_state=seed + fold_id)
-        hmm.fit(macro_all_df.iloc[:cursor])
-        snaps = hmm.filter_sequence(macro_all_df.iloc[:fold_end])
-        for snap in snaps[cursor:fold_end]:
-            oos_hmm_caps.append(float(snap.recommended_max_exposure))
+        hmm.fit(macro_all_df.loc[macro_all_df.index < oos_cutoff])
+        snaps = hmm.filter_sequence(macro_all_df.loc[:panel.dates[te_idx[-1]]])
+        exposure_by_date = {snap.trade_date: snap.recommended_max_exposure for snap in snaps}
+        oos_hmm_caps.extend(float(exposure_by_date[panel.dates[i]]) for i in te_idx)
 
         oos_indices.extend(te_idx.tolist())
         oos_alpha_chunks.append(fold_alpha)
@@ -527,6 +508,8 @@ def generate_walk_forward_oos_stream(
         cursor = fold_end
         fold_id += 1
 
+    if not oos_indices:
+        raise ValueError("Insufficient purged training and validation samples for walk-forward evaluation")
     idx_arr = np.array(oos_indices, dtype=int)
     return WalkForwardOOSStream(
         dates=[panel.dates[i] for i in idx_arr],
@@ -537,7 +520,6 @@ def generate_walk_forward_oos_stream(
         oos_hmm_exposure=oos_hmm_caps,
         y_open_ret_h=panel.y_open_ret_h[idx_arr],
         y_alpha_z=panel.y_alpha_z[idx_arr],
-        y_next_open_ret=panel.y_next_open_ret[idx_arr],
         vol_feats=panel.vol_feats[idx_arr],
         fold_boundaries=fold_Meta,
     )
@@ -580,10 +562,26 @@ def apply_turnover_deadband(
     *,
     l1_deadband: float = 0.16,
     inertia_blend: float = 0.40,
+    max_exposure: float | None = None,
+    stock_mask: np.ndarray | None = None,
 ) -> Tuple[np.ndarray, bool]:
-    """L1 换手死区与持仓惯性混合算子：若目标仓位与当前持仓 L1 距离小于阈值则跳过调仓，消除微幅噪音摩擦."""
+    """抑制微幅换手，优先执行清仓和仓位风险限制。"""
+    if max_exposure is not None and (not np.isfinite(max_exposure) or not 0.0 <= max_exposure <= 1.0):
+        raise ValueError("max_exposure must be finite and between 0 and 1")
+    if not np.any(proposed_w) or max_exposure == 0:
+        return np.zeros_like(proposed_w), bool(np.any(prev_w))
+    if stock_mask is not None:
+        tradable_proposal = np.where(proposed_w > 1e-4, proposed_w, 0.0)
+        if not np.any(limit_stock_weights(tradable_proposal, stock_mask)):
+            return np.zeros_like(proposed_w), bool(np.any(prev_w))
     if float(np.sum(prev_w)) < 1e-4:
-        return proposed_w.copy(), True
+        target = proposed_w.copy()
+        if max_exposure is not None and float(np.sum(target)) > max_exposure:
+            target = target * (max_exposure / float(np.sum(target)))
+        if stock_mask is not None:
+            target = limit_stock_weights(np.where(target > 1e-4, target, 0.0), stock_mask)
+            return target, bool(np.any(target) or np.any(prev_w))
+        return target, True
 
     # 当新旧持仓集合完全相同时，允许更大的免交易死区避免每期支付最低佣金与滑点
     same_support = np.array_equal(proposed_w > 1e-3, prev_w > 1e-3)
@@ -596,11 +594,37 @@ def apply_turnover_deadband(
     if curr_sum > 1e-6 and target_sum > 1e-6:
         blended = blended * (target_sum / curr_sum)
 
+    risk_override = False
+    if max_exposure is not None:
+        blended_sum = float(np.sum(blended))
+        risk_override = float(np.sum(prev_w)) > max_exposure + 1e-12 or blended_sum > max_exposure + 1e-12
+        if blended_sum > max_exposure:
+            blended = blended * (max_exposure / blended_sum)
+    if stock_mask is not None:
+        blended = limit_stock_weights(np.where(blended > 1e-4, blended, 0.0), stock_mask)
+        limited_prev = limit_stock_weights(prev_w, stock_mask)
+        risk_override = risk_override or bool(np.any(prev_w - limited_prev > 1e-12))
+    if risk_override:
+        return blended, True
+
     l1_diff = float(np.sum(np.abs(blended - prev_w)))
     threshold = l1_deadband * (1.35 if same_support else 1.0)
     if l1_diff < threshold:
         return prev_w.copy(), False
     return blended, True
+
+
+def _stock_mask_from_bars(bars: pd.DataFrame, symbols: Sequence[str]) -> np.ndarray:
+    """Use the explicit asset kind from the ledger snapshot in panel order."""
+    if "kind" not in bars:
+        raise ValueError("bars.kind is required for stock position limits")
+    kinds = bars.loc[bars["symbol"].isin(symbols), ["symbol", "kind"]].drop_duplicates()
+    if kinds["symbol"].duplicated().any() or not kinds["kind"].isin(("stock", "etf")).all():
+        raise ValueError("each symbol must have one valid bars.kind: stock or etf")
+    ordered_kinds = kinds.set_index("symbol")["kind"].reindex(symbols)
+    if ordered_kinds.isna().any():
+        raise ValueError("every panel symbol must have bars.kind metadata")
+    return ordered_kinds.eq("stock").to_numpy(dtype=bool)
 
 
 def _weights_from_policy_logits(
@@ -639,10 +663,14 @@ def _simulate_strategy_on_share_ledger(
     *,
     initial_cash: float = 100_000.0,
     cost: Costs = Costs(),
+    close_policy: Callable[[CloseState], Mapping[str, float] | None] | None = None,
 ) -> Tuple[Dict[str, Any], pd.Series]:
     """将收盘信号通过 execution_schedule 推迟到 t+1 开盘，并在 research_v1.ledger.simulate 上完成真实份额撮合与对账."""
     scheduled_orders = execution_schedule(eval_calendar, signal_weights_by_date)
-    bt = simulate(bars_df, eval_calendar, scheduled_orders, actions_df, initial_cash=initial_cash, cost=cost)
+    bt = simulate(
+        bars_df, eval_calendar, scheduled_orders, actions_df,
+        initial_cash=initial_cash, cost=cost, close_policy=close_policy,
+    )
     metrics = summarize(bt.equity, bt.orders, initial_cash)
 
     # 独立校验净值恒等式 nav == cash + market_value + receivable 与非负现金
@@ -657,6 +685,38 @@ def _simulate_strategy_on_share_ledger(
     metrics["min_cash"] = min_cash
     daily_ret_series = bt.equity.set_index("date")["daily_return"]
     return metrics, daily_ret_series
+
+
+def _rl_training_return_legs(
+    bars: pd.DataFrame,
+    actions: pd.DataFrame,
+    close_returns: pd.DataFrame,
+    next_sessions: pd.DatetimeIndex,
+) -> tuple[np.ndarray, np.ndarray]:
+    """返回旧仓隔夜收益、新仓日内收益，两者都在次日收盘前结算。"""
+    days = close_returns.index[close_returns.index <= next_sessions[-1]]
+    columns = close_returns.columns
+    bars = bars.assign(date=pd.to_datetime(bars["date"]).dt.normalize())
+    bars = bars.loc[bars["date"].isin(days)]
+    closes = bars.pivot(index="date", columns="symbol", values="close").reindex(index=days, columns=columns)
+    opens = bars.pivot(index="date", columns="symbol", values="open").reindex(index=days, columns=columns)
+    closes, opens = closes.where(closes.gt(0)), opens.where(opens.gt(0))
+    adjusted_opens = opens.copy()
+    for action in normalize_actions(actions, days).itertuples(index=False):
+        day = pd.Timestamp(action.ex_date)
+        if action.symbol in columns:
+            adjusted_opens.loc[day, action.symbol] = (
+                opens.loc[day, action.symbol] * action.share_multiplier + action.cash_per_share
+            )
+    overnight = adjusted_opens / closes.shift(1) - 1.0
+    intraday = closes / opens - 1.0
+    # 开盘缺失但可用收盘估值时，将已实现的全日变化留在旧仓。
+    overnight = overnight.where(opens.notna(), close_returns.reindex(days))
+    overnight_rets, intraday_rets = (
+        leg.reindex(next_sessions).replace([np.inf, -np.inf], np.nan).fillna(0.0).to_numpy()
+        for leg in (overnight, intraday)
+    )
+    return overnight_rets, intraday_rets
 
 
 def run_walk_forward_ablation_experiment(
@@ -679,6 +739,7 @@ def run_walk_forward_ablation_experiment(
     panel = build_open_to_open_panel(
         bars_df, calendar_dates, actions_df, kg_bundle, horizon=horizon, seq_len=20
     )
+    stock_mask = _stock_mask_from_bars(bars_df, panel.symbols)
     oos_stream = generate_walk_forward_oos_stream(
         panel,
         base_edges_df,
@@ -691,6 +752,8 @@ def run_walk_forward_ablation_experiment(
     # 将 OOS 序列切分为 RL 样本外训练段 (前 55%) 与最终未见样本外评估段 (后 45%)，严守 purge_training
     n_oos = len(oos_stream.dates)
     rl_split = max(15, int(n_oos * 0.55))
+    if rl_split >= n_oos:
+        raise ValueError("Insufficient out-of-sample dates for separate RL training and evaluation")
     eval_cutoff = oos_stream.dates[rl_split]
     rl_meta = pd.DataFrame({
         "idx": np.arange(rl_split),
@@ -698,8 +761,17 @@ def run_walk_forward_ablation_experiment(
         "label_end": oos_stream.label_end_dates[:rl_split],
     })
     rl_train_idx = purge_training(rl_meta, eval_cutoff)["idx"].to_numpy(dtype=int)
+    full_cal = panel.close_returns.index
+    train_positions = full_cal.get_indexer([oos_stream.dates[i] for i in rl_train_idx])
+    # 训练环境每一步对应一个完整交易日。面板缺日时，选择最长连续片段。
+    train_runs = np.split(rl_train_idx, np.flatnonzero(np.diff(train_positions) != 1) + 1)
+    rl_train_idx = max(train_runs, key=len)
     if len(rl_train_idx) < 5:
-        rl_train_idx = np.arange(max(1, rl_split - horizon - 1))
+        raise ValueError("Insufficient contiguous RL training samples with labels ending before evaluation")
+    train_positions = full_cal.get_indexer([oos_stream.dates[i] for i in rl_train_idx])
+    overnight_rets, intraday_rets = _rl_training_return_legs(
+        bars_df, actions_df, panel.close_returns, full_cal[train_positions + 1]
+    )
     eval_idx = np.arange(rl_split, n_oos)
 
     eval_dates = [oos_stream.dates[i] for i in eval_idx]
@@ -709,10 +781,7 @@ def run_walk_forward_ablation_experiment(
 
     # 计算 OOS 评估段 IC / RankIC / ICIR
     eval_alpha = oos_stream.oos_alpha[eval_idx]
-    eval_unc = oos_stream.oos_uncertainty[eval_idx]
     eval_target_z = oos_stream.y_alpha_z[eval_idx]
-    eval_vol = oos_stream.vol_feats[eval_idx]
-    eval_hmm_caps = [oos_stream.oos_hmm_exposure[i] for i in eval_idx]
 
     daily_ics, daily_rics = [], []
     for t in range(len(eval_idx)):
@@ -729,27 +798,26 @@ def run_walk_forward_ablation_experiment(
     icir = float(ic_mean / (np.std(daily_ics) + 1e-8) * np.sqrt(252.0 / horizon)) if daily_ics else 0.0
 
     # 准备评估窗口的完整交易日历 (含最后一个信号执行所需顺延交易日)
-    full_cal = sessions(calendar_dates)
     eval_cal = full_cal[(full_cal >= eval_dates[0]) & (full_cal <= eval_dates[-1])]
     # 包含 eval_dates[-1] 之后的下一个交易日以便最后一个信号能在 t+1 开盘成交
     after_days = full_cal[full_cal > eval_dates[-1]]
     if len(after_days) > 0:
         eval_cal = eval_cal.union(after_days[:1])
 
-    # 在纯样本外 RL 训练段 (rl_train_idx) 构建训练环境
-    rl_train_env = ASharePortfolioEnv(
-        alpha_preds=oos_stream.oos_alpha[rl_train_idx],
-        vol_features=oos_stream.vol_feats[rl_train_idx],
-        real_next_rets=oos_stream.y_next_open_ret[rl_train_idx],
-    )
+    def training_env() -> ASharePortfolioEnv:
+        return ASharePortfolioEnv(
+            alpha_preds=oos_stream.oos_alpha[rl_train_idx],
+            vol_features=oos_stream.vol_feats[rl_train_idx],
+            real_next_rets=intraday_rets,
+            overnight_rets=overnight_rets,
+            rebalance_interval=horizon,
+        )
 
-    # 1. 训练 Offline IQL (在纯 OOS 训练段拟合)
     _set_seed(42)
-    iql_net = train_offline_iql_agent(rl_train_env, n_behavior_episodes=14, iql_epochs=30)
+    iql_net = train_offline_iql_agent(training_env(), n_behavior_episodes=14, iql_epochs=30)
     iql_net.eval()
 
-    # 2. 对 OOS Alpha 序列执行严格因果指数移动平均 (EMA) 去噪，抑制周度截面排名高频毛刺
-    all_next_rets = oos_stream.y_next_open_ret
+    # 因果平滑只使用当前及之前的样本外预测。
     smoothed_alpha = np.zeros_like(oos_stream.oos_alpha, dtype=np.float64)
     ema_eta = 0.16 if n_assets > 6 else 0.35
     deadband_val = 0.34 if n_assets > 6 else 0.16
@@ -758,221 +826,98 @@ def run_walk_forward_ablation_experiment(
         raw_p = oos_stream.oos_alpha[idx_t] - 0.08 * oos_stream.oos_uncertainty[idx_t]
         smoothed_alpha[idx_t] = raw_p if idx_t == 0 else (1.0 - ema_eta) * smoothed_alpha[idx_t - 1] + ema_eta * raw_p
 
-    # 构造同频率 (每 horizon 个交易日检查一次，结合滞回缓冲带与 L1 换手死区) 的各策略收盘信号表
-    eq_signals: Dict[pd.Timestamp, Dict[str, float]] = {}
-    stage2_topk_signals: Dict[pd.Timestamp, Dict[str, float]] = {}
-    hrp_signals: Dict[pd.Timestamp, Dict[str, float]] = {}
-    prior_only_signals: Dict[pd.Timestamp, Dict[str, float]] = {}
-    iql_signals: Dict[pd.Timestamp, Dict[str, float]] = {}
+    decision_indices = {oos_stream.dates[i].date(): i for i in eval_idx[::horizon]}
+    eq_signals = {pd.Timestamp(day): {sym: 1.0 / n_assets for sym in symbols} for day in decision_indices}
 
-    prev_stage2_w = np.zeros(n_assets, dtype=np.float64)
-    prev_hrp_w = np.zeros(n_assets, dtype=np.float64)
-    prev_prior_w = np.zeros(n_assets, dtype=np.float64)
-    prev_iql_w = np.zeros(n_assets, dtype=np.float64)
-    prior_nav, prior_peak = 1.0, 1.0
-    iql_nav, iql_peak = 1.0, 1.0
+    def close_policy(
+        propose: Callable[[int, np.ndarray, CloseState], np.ndarray],
+        *, enforce_hmm_cap: bool = False,
+    ) -> Callable[[CloseState], Mapping[str, float] | None]:
+        limit_individual_stocks = enforce_hmm_cap and bool(stock_mask.any())
 
-    for step_i, global_i in enumerate(eval_idx):
-        day_ret = all_next_rets[global_i]
-        if step_i % horizon == 0:
-            day = oos_stream.dates[global_i]
-            penalized_a = smoothed_alpha[global_i]
-            v_t = oos_stream.vol_feats[global_i]
-            hmm_cap = oos_stream.oos_hmm_exposure[global_i]
-
-            # (a) Equal-Weight (保持原样作为不可变对照基准)
-            eq_signals[day] = {sym: 1.0 / n_assets for sym in symbols}
-
-            # (b) WalkForward Stage2 Top-K (Löwdin GBDT + Bitemporal KG-GAT + 滞回缓冲带 + L1 换手死区)
-            top_indices = select_buffered_top_k(penalized_a, prev_stage2_w, k)
-            prop_stage2_w = np.zeros(n_assets, dtype=np.float64)
-            # 按平滑 Alpha 强度做温和倾角分配
-            tilts = np.exp(0.35 * (penalized_a[top_indices] - np.max(penalized_a[top_indices])))
-            prop_stage2_w[top_indices] = tilts / np.sum(tilts)
-            new_stage2_w, trade_stage2 = apply_turnover_deadband(
-                prop_stage2_w, prev_stage2_w, l1_deadband=deadband_val, inertia_blend=blend_val
+        def on_close(state: CloseState) -> Mapping[str, float] | None:
+            i = decision_indices.get(state.date)
+            if i is None:
+                return None
+            held = np.array([state.weights.get(sym, 0.0) for sym in symbols])
+            target, trade = apply_turnover_deadband(
+                propose(i, held, state), held, l1_deadband=deadband_val, inertia_blend=blend_val,
+                max_exposure=oos_stream.oos_hmm_exposure[i] if enforce_hmm_cap else None,
+                stock_mask=stock_mask if limit_individual_stocks else None,
             )
-            if trade_stage2:
-                stage2_topk_signals[day] = {
-                    symbols[idx]: float(new_stage2_w[idx])
-                    for idx in range(n_assets)
-                    if new_stage2_w[idx] > 1e-4
-                }
-                prev_stage2_w = new_stage2_w
+            if not trade:
+                return None
+            # The constrained path already filters dust before checking concentration.
+            minimum_weight = 0.0 if limit_individual_stocks else 1e-4
+            return {sym: float(w) for sym, w in zip(symbols, target) if w > minimum_weight}
 
-            # (c) WalkForward HRP + CQR + HMM Cap + 滞回缓冲带 + L1 换手死区
-            hrp_candidates = select_buffered_top_k(penalized_a, prev_hrp_w, k)
-            hist_start = max(0, global_i - 60)
-            hist_rets = all_next_rets[hist_start:global_i]
-            if len(hist_rets) >= 10:
-                hrp_raw = HierarchicalRiskParityOptimizer.allocate_hrp_weights(
-                    hist_returns=hist_rets,
-                    candidate_indices=hrp_candidates.tolist(),
-                    alpha_tilts=penalized_a,
-                )
-            else:
-                hrp_raw = np.zeros(n_assets, dtype=np.float64)
-                hrp_raw[hrp_candidates] = 1.0 / k
-            prop_hrp_w = (hrp_raw * hmm_cap).astype(np.float64)
-            new_hrp_w, trade_hrp = apply_turnover_deadband(
-                prop_hrp_w, prev_hrp_w, l1_deadband=deadband_val, inertia_blend=blend_val
+        return on_close
+
+    def stage2_proposal(i: int, held: np.ndarray, _state: CloseState) -> np.ndarray:
+        alpha = smoothed_alpha[i]
+        selected = select_buffered_top_k(alpha, held, k)
+        tilts = np.exp(0.35 * (alpha[selected] - np.max(alpha[selected])))
+        proposal = np.zeros(n_assets, dtype=np.float64)
+        proposal[selected] = tilts / np.sum(tilts)
+        return proposal
+
+    def hrp_proposal(i: int, held: np.ndarray, state: CloseState) -> np.ndarray:
+        alpha = smoothed_alpha[i]
+        selected = select_buffered_top_k(alpha, held, k)
+        history = panel.close_returns.loc[:pd.Timestamp(state.date)].tail(60).to_numpy()
+        history = history[np.isfinite(history[:, selected]).all(axis=1)]
+        if len(history) >= 10:
+            proposal = HierarchicalRiskParityOptimizer.allocate_hrp_weights(
+                hist_returns=history, candidate_indices=selected.tolist(), alpha_tilts=alpha
             )
-            if trade_hrp:
-                hrp_signals[day] = {
-                    symbols[idx]: float(new_hrp_w[idx])
-                    for idx in range(n_assets)
-                    if new_hrp_w[idx] > 1e-4
-                }
-                prev_hrp_w = new_hrp_w
+        else:
+            proposal = np.zeros(n_assets, dtype=np.float64)
+            proposal[selected] = 1.0 / k
+        return proposal * oos_stream.oos_hmm_exposure[i]
 
-            # (d) Rule-Prior Only (带真实持仓状态反馈与换手死区)
-            prior_dd = (prior_peak - prior_nav) / max(prior_peak, 1e-8)
-            prior_cash = max(0.0, 1.0 - float(np.sum(prev_prior_w)))
-            obs_prior = np.concatenate([
-                penalized_a.astype(np.float32),
-                v_t.astype(np.float32),
-                prev_prior_w.astype(np.float32),
-                np.array([prior_cash, prior_dd], dtype=np.float32),
-            ])
-            prior_logits = build_alpha_risk_prior(obs_prior, n_assets, top_k=k).squeeze(0).numpy()
-            prop_prior_w = _weights_from_policy_logits(
-                prior_logits, penalized_a, prev_prior_w, prior_dd, hmm_cap, k
+    def rl_policy(
+        predict_delta: Callable[[torch.Tensor], torch.Tensor] | None = None,
+    ) -> Callable[[CloseState], Mapping[str, float] | None]:
+        def propose(i: int, held: np.ndarray, state: CloseState) -> np.ndarray:
+            alpha = smoothed_alpha[i]
+            obs = np.concatenate([
+                alpha, oos_stream.vol_feats[i], held, [state.cash / state.nav, state.drawdown]
+            ]).astype(np.float32)
+            logits = build_alpha_risk_prior(obs, n_assets, top_k=k).squeeze(0).numpy()
+            if predict_delta is not None:
+                with torch.no_grad():
+                    delta = predict_delta(torch.tensor(obs).unsqueeze(0)).squeeze(0).numpy()
+                logits = logits + 0.85 * delta
+            return _weights_from_policy_logits(
+                logits, alpha, held, state.drawdown, oos_stream.oos_hmm_exposure[i], k
             )
-            new_prior_w, trade_prior = apply_turnover_deadband(
-                prop_prior_w, prev_prior_w, l1_deadband=deadband_val, inertia_blend=blend_val
-            )
-            if trade_prior:
-                prior_only_signals[day] = {
-                    symbols[idx]: float(new_prior_w[idx])
-                    for idx in range(n_assets)
-                    if new_prior_w[idx] > 1e-4
-                }
-                prev_prior_w = new_prior_w
 
-            # (e) Offline IQL Policy (带真实持仓状态反馈与策略网络选股/倾角控制)
-            iql_dd = (iql_peak - iql_nav) / max(iql_peak, 1e-8)
-            iql_cash = max(0.0, 1.0 - float(np.sum(prev_iql_w)))
-            obs_iql = np.concatenate([
-                penalized_a.astype(np.float32),
-                v_t.astype(np.float32),
-                prev_iql_w.astype(np.float32),
-                np.array([iql_cash, iql_dd], dtype=np.float32),
-            ])
-            prior_iql_logits = build_alpha_risk_prior(obs_iql, n_assets, top_k=k).squeeze(0).numpy()
-            with torch.no_grad():
-                obs_t = torch.tensor(obs_iql, dtype=torch.float32).unsqueeze(0)
-                iql_delta = iql_net.policy_net(obs_t).squeeze(0).numpy()
-            iql_logits = prior_iql_logits + 0.85 * iql_delta
-            prop_iql_w = _weights_from_policy_logits(
-                iql_logits, penalized_a, prev_iql_w, iql_dd, hmm_cap, k
-            )
-            new_iql_w, trade_iql = apply_turnover_deadband(
-                prop_iql_w, prev_iql_w, l1_deadband=deadband_val, inertia_blend=blend_val
-            )
-            if trade_iql:
-                iql_signals[day] = {
-                    symbols[idx]: float(new_iql_w[idx])
-                    for idx in range(n_assets)
-                    if new_iql_w[idx] > 1e-4
-                }
-                prev_iql_w = new_iql_w
+        return close_policy(propose, enforce_hmm_cap=True)
 
-        # 自然价格漂移更新各策略内部跟踪状态 (零未来函数：仅用于下一交易日状态输入)
-        for w_ref in (prev_stage2_w, prev_hrp_w):
-            if float(np.sum(w_ref)) > 1e-5:
-                cash_part = max(0.0, 1.0 - float(np.sum(w_ref)))
-                grown = w_ref * (1.0 + day_ret)
-                tot = float(np.sum(grown)) + cash_part
-                w_ref[:] = grown / max(tot, 1e-8)
-
-        if float(np.sum(prev_prior_w)) > 1e-5:
-            prior_nav *= (1.0 + float(np.dot(prev_prior_w, day_ret)))
-            prior_peak = max(prior_peak, prior_nav)
-            cash_part = max(0.0, 1.0 - float(np.sum(prev_prior_w)))
-            grown = prev_prior_w * (1.0 + day_ret)
-            prev_prior_w = grown / max(float(np.sum(grown)) + cash_part, 1e-8)
-
-        if float(np.sum(prev_iql_w)) > 1e-5:
-            iql_nav *= (1.0 + float(np.dot(prev_iql_w, day_ret)))
-            iql_peak = max(iql_peak, iql_nav)
-            cash_part = max(0.0, 1.0 - float(np.sum(prev_iql_w)))
-            grown = prev_iql_w * (1.0 + day_ret)
-            prev_iql_w = grown / max(float(np.sum(grown)) + cash_part, 1e-8)
-
-    # 3. 5-Seed PPO 训练与真实份额账本评估 (含闭环状态跟踪与 L1 换手死区)
-    ppo_seed_schedules: Dict[int, Dict[pd.Timestamp, Dict[str, float]]] = {}
+    policies = {
+        "wf_stage2_bitemporal_kg_gat": close_policy(stage2_proposal),
+        "wf_hrp_cqr_hmm": close_policy(hrp_proposal, enforce_hmm_cap=True),
+        "rl_rule_prior_only": rl_policy(),
+        "rl_offline_iql": rl_policy(iql_net.policy_net),
+    }
+    ppo_seed_policies = {}
     for seed_val in ppo_seeds:
         _set_seed(seed_val)
-        env_seed = ASharePortfolioEnv(
-            alpha_preds=oos_stream.oos_alpha[rl_train_idx],
-            vol_features=oos_stream.vol_feats[rl_train_idx],
-            real_next_rets=oos_stream.y_next_open_ret[rl_train_idx],
-        )
-        ppo_model = train_ppo_portfolio_agent(env_seed, rollout_episodes=20, ppo_epochs=4, lr=1.5e-3)
-        ppo_model.eval()
-        seed_sig: Dict[pd.Timestamp, Dict[str, float]] = {}
-        prev_ppo_w = np.zeros(n_assets, dtype=np.float64)
-        ppo_nav, ppo_peak = 1.0, 1.0
-        for step_i, global_i in enumerate(eval_idx):
-            day_ret = all_next_rets[global_i]
-            if step_i % horizon == 0:
-                day = oos_stream.dates[global_i]
-                a_t = smoothed_alpha[global_i]
-                v_t = oos_stream.vol_feats[global_i]
-                hmm_cap = oos_stream.oos_hmm_exposure[global_i]
-                ppo_dd = (ppo_peak - ppo_nav) / max(ppo_peak, 1e-8)
-                ppo_cash = max(0.0, 1.0 - float(np.sum(prev_ppo_w)))
-                obs_vec = np.concatenate([
-                    a_t.astype(np.float32),
-                    v_t.astype(np.float32),
-                    prev_ppo_w.astype(np.float32),
-                    np.array([ppo_cash, ppo_dd], dtype=np.float32),
-                ])
-                prior_logits = build_alpha_risk_prior(obs_vec, n_assets, top_k=k).squeeze(0).numpy()
-                with torch.no_grad():
-                    obs_t = torch.tensor(obs_vec, dtype=torch.float32).unsqueeze(0)
-                    mean_delta, _ = ppo_model(obs_t)
-                ppo_logits = prior_logits + 0.85 * mean_delta.squeeze(0).numpy()
-                prop_ppo_w = _weights_from_policy_logits(
-                    ppo_logits, a_t, prev_ppo_w, ppo_dd, hmm_cap, k
-                )
-                new_ppo_w, trade_ppo = apply_turnover_deadband(
-                    prop_ppo_w, prev_ppo_w, l1_deadband=deadband_val, inertia_blend=blend_val
-                )
-                if trade_ppo:
-                    seed_sig[day] = {
-                        symbols[idx]: float(new_ppo_w[idx])
-                        for idx in range(n_assets)
-                        if new_ppo_w[idx] > 1e-4
-                    }
-                    prev_ppo_w = new_ppo_w
+        model = train_ppo_portfolio_agent(training_env(), rollout_episodes=20, ppo_epochs=4, lr=1.5e-3)
+        model.eval()
+        ppo_seed_policies[seed_val] = rl_policy(lambda obs, actor=model: actor(obs)[0])
 
-            if float(np.sum(prev_ppo_w)) > 1e-5:
-                ppo_nav *= (1.0 + float(np.dot(prev_ppo_w, day_ret)))
-                ppo_peak = max(ppo_peak, ppo_nav)
-                cash_part = max(0.0, 1.0 - float(np.sum(prev_ppo_w)))
-                grown = prev_ppo_w * (1.0 + day_ret)
-                prev_ppo_w = grown / max(float(np.sum(grown)) + cash_part, 1e-8)
-        ppo_seed_schedules[seed_val] = seed_sig
-
-    # 4. 在真实份额账本 (normal 与 double_friction 两种摩擦情景) 下统一结算全部策略
+    # 各摩擦情景从独立账本的收盘状态出发，成交或拒单都会影响后续信号。
     base_cost = Costs()
-    strategy_Map = {
-        "equal_weight": eq_signals,
-        "wf_stage2_bitemporal_kg_gat": stage2_topk_signals,
-        "wf_hrp_cqr_hmm": hrp_signals,
-        "rl_rule_prior_only": prior_only_signals,
-        "rl_offline_iql": iql_signals,
-    }
-
     ledger_reports: Dict[str, Dict[str, Any]] = {}
     normal_daily_returns: Dict[str, pd.Series] = {}
 
     for cost_name, cost_cfg in (("normal", base_cost), ("double_friction", base_cost.stressed())):
         ledger_reports[cost_name] = {}
-        for strat_name, sig_schedule in strategy_Map.items():
+        for strat_name, policy in {"equal_weight": None, **policies}.items():
             m, r_series = _simulate_strategy_on_share_ledger(
-                sig_schedule, bars_df, eval_cal, actions_df, initial_cash=initial_cash, cost=cost_cfg
+                eq_signals if policy is None else {}, bars_df, eval_cal, actions_df,
+                initial_cash=initial_cash, cost=cost_cfg, close_policy=policy,
             )
             ledger_reports[cost_name][strat_name] = m
             if cost_name == "normal":
@@ -981,9 +926,10 @@ def run_walk_forward_ablation_experiment(
         # 汇总 5-Seed PPO 账本指标
         seed_runs = []
         seed_series_list = []
-        for seed_val, seed_sig in ppo_seed_schedules.items():
+        for seed_val, policy in ppo_seed_policies.items():
             m_seed, r_seed = _simulate_strategy_on_share_ledger(
-                seed_sig, bars_df, eval_cal, actions_df, initial_cash=initial_cash, cost=cost_cfg
+                {}, bars_df, eval_cal, actions_df,
+                initial_cash=initial_cash, cost=cost_cfg, close_policy=policy,
             )
             m_seed["seed"] = seed_val
             seed_runs.append(m_seed)
@@ -1029,6 +975,16 @@ def run_walk_forward_ablation_experiment(
             "initial_cash": initial_cash,
             "execution_timing": "signal_at_t_close -> execute_at_t_plus_1_open",
             "label_definition": "open(t+1) to open(t+h+1) holder return with dividends and splits",
+            "risk_inputs": "corporate-action-adjusted close returns observed through signal close",
+            "stock_target_limits": {
+                "max_share_of_nav": MAX_STOCK_NAV_WEIGHT,
+                "max_share_of_invested_value": MAX_STOCK_HOLDINGS_SHARE,
+                "review_interval_oos_sessions": horizon,
+                "applies_to": "HRP and RL target weights before lot rounding and fills",
+            },
+            "evaluation_policy_state": "actual share-ledger holdings, cash and drawdown at signal close",
+            "rl_training_transition": "fractional next-session approximation: old holdings close-to-open, target holdings open-to-close; simplified costs",
+            "rl_rebalance_interval_sessions": horizon,
             "purge_gap_enforced": True,
             "walk_forward_folds": oos_stream.fold_boundaries,
             "oos_rl_train_sessions": int(len(rl_train_idx)),

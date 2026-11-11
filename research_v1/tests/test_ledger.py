@@ -44,6 +44,57 @@ def test_costs_and_t_plus_one_reconcile_across_weekend():
     assert (result.equity["cash"] >= 0).all()
 
 
+def test_close_policy_receives_filled_close_state_and_trades_next_open():
+    wednesday = "2023-08-30"
+    calendar = [FRIDAY, MONDAY, TUESDAY, wednesday]
+    bars = pd.DataFrame([bar(FRIDAY), bar(MONDAY, close=9.8, low=9.8), bar(TUESDAY), bar(wednesday)])
+    actions = pd.DataFrame([{
+        "symbol": ETF, "record_date": MONDAY, "ex_date": TUESDAY, "pay_date": wednesday,
+        "cash_per_share": 0.10, "share_multiplier": 1.0,
+    }])
+
+    def run(data):
+        states = []
+
+        def policy(state):
+            states.append(state)
+            if state.date == date.fromisoformat(FRIDAY):
+                return {ETF: 1.0}
+            if state.date == date.fromisoformat(TUESDAY):
+                return {}
+            return None
+
+        result = simulate(data, calendar, {}, actions, initial_cash=10_000, close_policy=policy)
+        return states, result
+
+    states, result = run(bars)
+    friday, monday, tuesday = states
+    assert [state.date for state in states] == [date.fromisoformat(day) for day in calendar[:-1]]
+    assert (friday.nav, friday.cash, friday.drawdown, friday.weights) == (10_000, 10_000, 0, {})
+    assert (monday.nav, monday.cash) == (9810.50, 990.50)
+    assert monday.weights == {ETF: 8820 / 9810.50}
+    assert monday.drawdown == pytest.approx(1.0 - 9810.50 / 10_000)
+    assert tuesday.cash == monday.cash
+    assert tuesday.nav == tuesday.cash + 9000 + 90
+    assert tuesday.weights == {ETF: 9000 / tuesday.nav}
+    assert result.orders["date"].tolist() == [date.fromisoformat(MONDAY), date.fromisoformat(wednesday)]
+    assert result.orders["filled_qty"].tolist() == [900, 900]
+
+    perturbed = bars.copy()
+    perturbed.loc[perturbed["date"] == TUESDAY, ["open", "close", "low"]] = 9.5
+    changed_states, _ = run(perturbed)
+    assert changed_states[:2] == states[:2]
+    assert changed_states[2].nav != tuesday.nav
+
+
+def test_close_policy_rejects_static_targets_and_invalid_weights():
+    bars = pd.DataFrame([bar(FRIDAY), bar(MONDAY)])
+    with pytest.raises(LedgerError, match="combined with static"):
+        simulate(bars, [FRIDAY, MONDAY], {MONDAY: {}}, initial_cash=10_000, close_policy=lambda _: None)
+    with pytest.raises(LedgerError, match="leverage"):
+        simulate(bars, [FRIDAY, MONDAY], {}, initial_cash=10_000, close_policy=lambda _: {ETF: 1.01})
+
+
 def test_stock_fee_changes_leave_etf_stamp_and_transfer_untaxed():
     costs = Costs()
     assert costs.charges(date(2022, 4, 28), "stock", "sell", 100_000) == (30, 100, 2)

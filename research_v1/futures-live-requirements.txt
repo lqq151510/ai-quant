@@ -1,0 +1,2 @@
+# Optional quote-only adapter. Install into its own virtual environment.
+tqsdk==3.10.4

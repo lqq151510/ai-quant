@@ -1,7 +1,7 @@
 """基础设施层：A股/ETF 行情获取与知识图谱初始边构建."""
 
 from dataclasses import dataclass
-from typing import Dict, List, Tuple
+from typing import Dict, List, Literal, Tuple
 import numpy as np
 import pandas as pd
 
@@ -13,27 +13,28 @@ class AssetMeta:
     name: str
     sector: str
     is_leader: bool = False
+    kind: Literal["stock", "etf"] = "stock"
 
 
 # 精选 12 只具备明显产业链传导与板块轮动特征的核心标的池
 CORE_UNIVERSE: List[AssetMeta] = [
     # AI 与半导体算力链
-    AssetMeta("512480", "半导体ETF", "Tech_Semi", is_leader=True),
+    AssetMeta("512480", "半导体ETF", "Tech_Semi", is_leader=True, kind="etf"),
     AssetMeta("688981", "中芯国际", "Tech_Semi", is_leader=True),
     AssetMeta("002371", "北方华创", "Tech_Semi", is_leader=False),
-    AssetMeta("515880", "通信设备ETF", "AI_Compute", is_leader=True),
+    AssetMeta("515880", "通信设备ETF", "AI_Compute", is_leader=True, kind="etf"),
     AssetMeta("300308", "中际旭创", "AI_Compute", is_leader=False),
     # 新能源与智能制造链
     AssetMeta("300750", "宁德时代", "New_Energy", is_leader=True),
     AssetMeta("002594", "比亚迪", "New_Energy", is_leader=False),
-    AssetMeta("515790", "光伏ETF", "New_Energy", is_leader=False),
+    AssetMeta("515790", "光伏ETF", "New_Energy", is_leader=False, kind="etf"),
     # 价值红利与宏观对冲链
-    AssetMeta("510880", "红利ETF", "Dividend_Value", is_leader=True),
+    AssetMeta("510880", "红利ETF", "Dividend_Value", is_leader=True, kind="etf"),
     AssetMeta("600900", "长江电力", "Dividend_Value", is_leader=False),
-    AssetMeta("510300", "沪深300ETF", "Broad_Index", is_leader=True),
-    AssetMeta("518880", "黄金ETF", "Macro_Hedge", is_leader=True),
+    AssetMeta("510300", "沪深300ETF", "Broad_Index", is_leader=True, kind="etf"),
+    AssetMeta("518880", "黄金ETF", "Macro_Hedge", is_leader=True, kind="etf"),
     # 跨市场全球科技锚点 (纳斯达克100：映射英伟达/费半/海外AI资本开支冲击)
-    AssetMeta("513100", "纳指ETF", "Global_Tech_Anchor", is_leader=True),
+    AssetMeta("513100", "纳指ETF", "Global_Tech_Anchor", is_leader=True, kind="etf"),
 ]
 
 # 显式知识图谱先验关系：(源节点, 目标节点, 关系类型, 先验权重)
