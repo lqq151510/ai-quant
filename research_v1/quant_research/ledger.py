@@ -6,7 +6,7 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP
 from math import floor, isfinite
 
 import pandas as pd
@@ -19,6 +19,8 @@ class LedgerError(ValueError):
 DateLike = date | pd.Timestamp | str
 Rates = tuple[tuple[str, float], ...]
 LOT_SIZE = 100
+_LIMIT_SYMBOL = "510300"
+_ETF_TICK = Decimal("0.001")
 _CENT = Decimal("0.01")
 _EPSILON = 1e-9
 _BARS = ("date", "symbol", "kind", "open", "high", "low", "close",
@@ -250,7 +252,19 @@ def _prepare_actions(actions: pd.DataFrame | None, days: list[date]) -> list[_Ac
     return result
 
 
-def _open_price(row: object | None, side: str, cost: Costs) -> tuple[float | None, str]:
+def opening_execution_price(reference: float, cost: Costs, side: str) -> float:
+    """Apply adverse slippage and outward rounding for the one-lot ETF study."""
+    if side not in ("buy", "sell") or not _positive(reference):
+        raise LedgerError("opening price requires a valid side and positive reference")
+    slippage = Decimal(str(cost.slippage_bps)) / 10_000
+    factor = 1 + slippage if side == "buy" else 1 - slippage
+    rounding = ROUND_CEILING if side == "buy" else ROUND_FLOOR
+    return float((Decimal(str(reference)) * factor).quantize(_ETF_TICK, rounding=rounding))
+
+
+def _open_price(
+    row: object | None, side: str, cost: Costs, *, round_to_etf_tick: bool = False,
+) -> tuple[float | None, str]:
     if row is None:
         return None, "missing_bar"
     if not row.tradable or row.volume == 0:
@@ -265,8 +279,11 @@ def _open_price(row: object | None, side: str, cost: Costs) -> tuple[float | Non
         return None, "limit_up"
     if side == "sell" and row.open <= row.lower_limit + _EPSILON:
         return None, "limit_down"
-    direction = 1 if side == "buy" else -1
-    price = row.open * (1 + direction * cost.slippage_bps / 10_000)
+    if round_to_etf_tick:
+        price = opening_execution_price(row.open, cost, side)
+    else:
+        direction = 1 if side == "buy" else -1
+        price = row.open * (1 + direction * cost.slippage_bps / 10_000)
     if not row.lower_limit - _EPSILON <= price <= row.upper_limit + _EPSILON:
         return None, "slippage_outside_limit"
     return price, ""
@@ -313,6 +330,41 @@ def _liquidation_quantity(position: _Position, day: date, requested: int) -> int
     return quantity // LOT_SIZE * LOT_SIZE
 
 
+def _execute_open_order(
+    day: date, symbol: str, side: str, requested: int, row: object | None,
+    position: _Position, cash: float, cost: Costs, orders: list[tuple],
+    *, round_to_etf_tick: bool = False, buy_limit: float | None = None,
+) -> float:
+    price, reason = _open_price(row, side, cost, round_to_etf_tick=round_to_etf_tick)
+    if price is not None and buy_limit is not None and price > buy_limit:
+        price, reason = None, "price_above_limit"
+    quantity = 0
+    notional, charges, cash_delta = 0.0, (0.0, 0.0, 0.0), 0.0
+    if price is not None:
+        if side == "buy":
+            quantity = _affordable(day, row.kind, requested, price, cash, cost)
+            reason = "board_lot" if requested < LOT_SIZE else "insufficient_cash"
+        else:
+            quantity = _liquidation_quantity(position, day, requested)
+            reason = "t_plus_one" if requested > position.sellable(day) else "board_lot"
+        if quantity:
+            notional, charges, cash_delta = _fill_value(day, row.kind, side, quantity, price, cost)
+            if cash + cash_delta < -_EPSILON:
+                quantity = 0
+                notional, charges, cash_delta = 0.0, (0.0, 0.0, 0.0), 0.0
+                reason = "insufficient_cash_for_fees"
+            else:
+                cash = _money(cash + cash_delta)
+                if side == "buy":
+                    position.buy(day, quantity)
+                else:
+                    position.sell(day, quantity)
+    status = "filled" if quantity == requested else "partial" if quantity else "rejected"
+    orders.append((day, symbol, side, requested, quantity, price if quantity else None,
+                   *charges, status, "" if status == "filled" else reason, notional, cash_delta))
+    return cash
+
+
 def _rebalance(
     day: date, weights: dict[str, float], rows: dict[str, object],
     positions: dict[str, _Position], prior_close: dict[str, float],
@@ -344,32 +396,44 @@ def _rebalance(
         row = rows.get(symbol)
         position = positions.setdefault(symbol, _Position())
         side = "buy" if buying else "sell"
-        price, reason = _open_price(row, side, cost)
-        quantity = 0
-        notional, charges, cash_delta = 0.0, (0.0, 0.0, 0.0), 0.0
-        if price is not None:
-            if buying:
-                quantity = _affordable(day, row.kind, requested, price, cash, cost)
-                reason = "board_lot" if requested < LOT_SIZE else "insufficient_cash"
-            else:
-                quantity = _liquidation_quantity(position, day, requested)
-                reason = "t_plus_one" if requested > position.sellable(day) else "board_lot"
-            if quantity:
-                notional, charges, cash_delta = _fill_value(day, row.kind, side, quantity, price, cost)
-                if cash + cash_delta < -_EPSILON:
-                    quantity = 0
-                    notional, charges, cash_delta = 0.0, (0.0, 0.0, 0.0), 0.0
-                    reason = "insufficient_cash_for_fees"
-                else:
-                    cash = _money(cash + cash_delta)
-                    if buying:
-                        position.buy(day, quantity)
-                    else:
-                        position.sell(day, quantity)
-        status = "filled" if quantity == requested else "partial" if quantity else "rejected"
-        orders.append((day, symbol, side, requested, quantity, price if quantity else None,
-                       *charges, status, "" if status == "filled" else reason, notional, cash_delta))
+        cash = _execute_open_order(day, symbol, side, requested, row, position, cash, cost, orders)
     return cash
+
+
+def _prepare_entry_limits(entry_limits: Mapping[DateLike, float], calendar: set[date]) -> dict[date, float]:
+    limits = {}
+    for raw_day, raw_limit in entry_limits.items():
+        day = _date(raw_day)
+        limit = float(raw_limit)
+        if day not in calendar or day in limits:
+            raise LedgerError(f"unknown or duplicate entry day: {day}")
+        if not _positive(limit):
+            raise LedgerError(f"nonpositive or nonfinite entry limit on {day}")
+        limits[day] = limit
+    return limits
+
+
+def _replay_limit_open(
+    day: date, buy_limit: float | None, rows: dict[str, object],
+    positions: dict[str, _Position], cash: float, cost: Costs, orders: list[tuple],
+) -> float:
+    symbol = _LIMIT_SYMBOL
+    row = rows.get(symbol)
+    position = positions.setdefault(symbol, _Position())
+    if position.quantity:
+        cash = _execute_open_order(
+            day, symbol, "sell", position.quantity, row, position, cash, cost, orders, round_to_etf_tick=True,
+        )
+    if buy_limit is None:
+        return cash
+    if position.quantity:
+        orders.append((day, symbol, "buy", LOT_SIZE, 0, None, 0.0, 0.0, 0.0,
+                       "rejected", "position_held", 0.0, 0.0))
+        return cash
+    return _execute_open_order(
+        day, symbol, "buy", LOT_SIZE, row, position, cash, cost, orders,
+        round_to_etf_tick=True, buy_limit=buy_limit,
+    )
 
 
 def simulate(
@@ -380,6 +444,7 @@ def simulate(
     *,
     initial_cash: float,
     cost: Costs = Costs(),
+    entry_limits: Mapping[DateLike, float] | None = None,
 ) -> BacktestResult:
     """Simulate precomputed opening target weights on a supplied exchange calendar.
 
@@ -388,14 +453,22 @@ def simulate(
     liquidity. Limits, explicit halts, and absent prices can prevent fills.
     Stock ETF trading is the secondary market case only. Dividends are credited
     at the supplied cash per share, on the first session on or after payment.
+    For the 510300 research replay, entry_limits schedules one-lot buy caps by
+    execution date. Each opening first attempts to sell any carried position.
     """
     if not _positive(initial_cash) or _money(initial_cash) == 0:
         raise LedgerError("initial cash must be finite and positive to the cent")
     days = [_date(day) for day in calendar]
     if not days or days != sorted(set(days)):
         raise LedgerError("calendar must be non-empty, unique and increasing")
+    if entry_limits is not None and targets:
+        raise LedgerError("entry limits cannot be combined with targets")
     execution = _prepare_targets(targets, set(days))
-    groups = _prepare_bars(bars).groupby("date", sort=False)
+    limits = None if entry_limits is None else _prepare_entry_limits(entry_limits, set(days))
+    prepared_bars = _prepare_bars(bars)
+    if limits is not None and prepared_bars.loc[prepared_bars["symbol"].eq(_LIMIT_SYMBOL), "kind"].ne("etf").any():
+        raise LedgerError("the one-lot limit replay requires 510300 ETF bars")
+    groups = prepared_bars.groupby("date", sort=False)
     event_data = _prepare_actions(actions, days)
     ex_events, record_events = defaultdict(list), defaultdict(list)
     for event in event_data:
@@ -455,7 +528,9 @@ def simulate(
                 and abs(reference - previous_close[symbol]) > tolerance + _EPSILON
             ):
                 raise LedgerError(f"unexplained ex-rights reference for {symbol} on {day}")
-        if day in execution:
+        if limits is not None:
+            cash = _replay_limit_open(day, limits.get(day), rows, positions, cash, cost, order_rows)
+        elif day in execution:
             opening_reference = previous_close.copy()
             for event in ex_events[day]:
                 if event.symbol in opening_reference:

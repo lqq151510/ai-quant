@@ -1,0 +1,35 @@
+{
+  "frozen_at": "2026-11-11T15:13:15.191799+08:00",
+  "evidence": "retrospective price-proxy screen; choose no parameters on resulting profits",
+  "symbols": {
+    "510300": {
+      "kind": "etf",
+      "tick": "0.001"
+    },
+    "601988": {
+      "kind": "stock",
+      "tick": "0.01"
+    }
+  },
+  "quantity": 100,
+  "first_complete_session": "2026-10-14",
+  "last_complete_session": "2026-11-11",
+  "eligibility": "each symbol on each inner session with consecutive previous, entry, and next full sessions; neutral simulated eligibility",
+  "price_cap": "previous complete exchange session close for both arms",
+  "entry_labels": {
+    "overnight_limit": "09:35",
+    "wait_0935": "09:40"
+  },
+  "entry_fill": "one attempt at the selected bar's open, adverse buy slippage rounded up to tick; fill proxy if price <= cap",
+  "exit_label": "09:35",
+  "exit_fill": "next complete consecutive exchange session first bar open, adverse sell slippage rounded down to tick",
+  "time_label_convention": "five-minute bar end in Asia/Shanghai",
+  "no_fill": "zero P&L and fees; included in the paired opportunity denominator",
+  "cost_scenarios": {
+    "repo_normal": "existing ledger Costs defaults (5 CNY minimum per side)",
+    "repo_double": "Costs.stressed(), doubles commissions and slippage",
+    "proportional_commission": "Costs defaults with no minimum commission, fee sensitivity"
+  },
+  "acceptance": "Screen 09:35 for strictly positive total net P&L and strictly positive paired net increment versus overnight under both repo cost scenarios. A pass can only justify a fresh quote-based shadow comparison.",
+  "real_2026_11_11_fills": "separate entry check only; first eligible sale at a future session, no realized round trip from the two real simulated buys"
+}

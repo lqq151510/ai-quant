@@ -1,0 +1,33 @@
+{
+  "frozen_at": "2026-11-11T15:30:07.108106+08:00",
+  "symbol": "510300",
+  "kind": "etf",
+  "tick": "0.001",
+  "quantity": 100,
+  "initial_cash_virtual": 10000,
+  "history_start": "2015-01-01",
+  "evaluation_start": "2023-01-01",
+  "data_end": "2024-12-31",
+  "sealed_from": "2025-01-01",
+  "features": [
+    "return_5",
+    "return_20",
+    "return_60",
+    "volatility_20"
+  ],
+  "training": "expanding from 2015; StandardScaler + Ridge(alpha=1.0) refit before each calendar quarter; labels mature strictly before first decision",
+  "label": "raw Open(t+2) / Close(t) - 1; convert to estimated absolute exit price at decision close",
+  "entry": "one lot on next session opening proxy with previous close as limit; after slippage and tick rounding, respect daily limits; exit any carried lot before new entry",
+  "exit": "one opening sell attempt from the following trading session; retry at later opens if blocked, retain book value if unresolved",
+  "normal": "repository Costs defaults",
+  "double": "repository Costs.stressed(); hold the normal-cost signal approvals fixed",
+  "proportional": "normal cost with minimum_commission=0; recompute approvals as an exploratory fee sensitivity",
+  "gate": "predicted cash proceeds at rounded adverse sale quote minus one-lot debit at the existing cap and both fees is strictly greater than zero; no forecast of dividend receipts",
+  "minimum_expected_net_cny_exclusive": 0,
+  "controls": [
+    "prior_close_limit",
+    "cash"
+  ],
+  "screen": "candidate net P&L must exceed both zero and prior-close limit, drawdown <=0.15 and no unresolved position under normal and double costs",
+  "evidence": "historical exploration; 2023–2024 previously inspected; independent forward observation remains pending"
+}
