@@ -32,6 +32,9 @@ def main(argv: list[str] | None = None) -> int:
     evidence.add_argument("--as-of", type=datetime.fromisoformat, required=True)
     evidence.add_argument("--target", action="append", required=True)
     evidence.add_argument("--lookback-days", type=int, default=7)
+    paper_entry = commands.add_parser("paper-entry", help="evaluate a recorded paper buy observation")
+    paper_entry.add_argument("observation", type=Path, help="JSON containing the signal, limit and quote evidence")
+    paper_entry.add_argument("--news", type=Path, action="append", default=[], help="forward news batch JSON for paper comparison")
     prepare = commands.add_parser("prepare-etf", help="normalize captured tables, keeping unverified evidence blocked")
     prepare.add_argument("--probe", type=Path, required=True)
     prepare.add_argument("--calendar", type=Path, required=True)
@@ -45,6 +48,18 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False))
 
     try:
+        if args.command == "paper-entry":
+            from .paper_entry import evaluate_paper_buy
+
+            observation = json.loads(args.observation.read_text(encoding="utf-8"))
+            if args.news:
+                from .news_entry import compare_news_entry
+
+                batches = [json.loads(path.read_text(encoding="utf-8")) for path in args.news]
+                emit(compare_news_entry(observation, batches))
+            else:
+                emit(evaluate_paper_buy(observation))
+            return 0
         if args.command == "probe":
             from .providers import run_probe
 
@@ -85,9 +100,9 @@ def main(argv: list[str] | None = None) -> int:
             origin = manifest["origin"]
             kinds = ("etf", "stock")
         else:
-            if args.command == "baseline" and args.end >= HOLDOUT_START:
-                raise ValueError("baseline command does not open the sealed test interval")
-            manifest, frames = read_snapshot(args.snapshot)
+            if args.end >= HOLDOUT_START:
+                raise ValueError(f"{args.command} command does not open the sealed test interval")
+            manifest, frames = read_snapshot(args.snapshot, end=args.end)
             period = ResearchPeriod(RESEARCH_START, args.end)
             kinds = ("etf", "stock") if args.kind == "all" else (args.kind,)
             gates = [audit_snapshot(manifest, frames, period, kind) for kind in kinds]

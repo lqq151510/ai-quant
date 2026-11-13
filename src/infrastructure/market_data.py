@@ -16,7 +16,7 @@ class AssetMeta:
     kind: Literal["stock", "etf"] = "stock"
 
 
-# 精选 12 只具备明显产业链传导与板块轮动特征的核心标的池
+# 原型核心标的池
 CORE_UNIVERSE: List[AssetMeta] = [
     # AI 与半导体算力链
     AssetMeta("512480", "半导体ETF", "Tech_Semi", is_leader=True, kind="etf"),
@@ -36,6 +36,12 @@ CORE_UNIVERSE: List[AssetMeta] = [
     # 跨市场全球科技锚点 (纳斯达克100：映射英伟达/费半/海外AI资本开支冲击)
     AssetMeta("513100", "纳指ETF", "Global_Tech_Anchor", is_leader=True, kind="etf"),
 ]
+
+MARKET_DATA_SOURCE_ORIGINS = {
+    "akshare_sina": "real",
+    "akshare_eastmoney": "real",
+    "synthetic_panel": "synthetic",
+}
 
 # 显式知识图谱先验关系：(源节点, 目标节点, 关系类型, 先验权重)
 # 包含：跨市场海外算力映射 (overseas_ai_chain)、同行业共振 (same_sector)、产业链传导 (supply_chain)、避险跷跷板 (risk_off_hedge)
@@ -87,7 +93,7 @@ def fetch_or_generate_market_data(
     try_online_akshare: bool = True,
     seed: int = 42,
 ) -> pd.DataFrame:
-    """优先尝试从 AkShare 拉取真实历史日线，若网络受限则生成高保真含产业链动量溢出效应的基准日线."""
+    """拉取有来源标签的历史日线，覆盖不足时返回明确标记的合成面板。"""
     if try_online_akshare:
         try:
             df = _fetch_from_akshare(n_days=n_days)
@@ -128,7 +134,7 @@ def _apply_split_qfq_adjustment(sub: pd.DataFrame) -> pd.DataFrame:
 
 
 def _fetch_from_akshare(n_days: int = 750) -> pd.DataFrame:
-    """使用 AkShare (新浪/东财双通道) 拉取 12 只核心场内 ETF 与个股近 3 年真实前复权日线."""
+    """使用 AkShare 新浪/东财接口获取核心标的的历史行情。"""
     import akshare as ak
 
     end_dt = pd.Timestamp.today().strftime("%Y%m%d")
@@ -138,6 +144,7 @@ def _fetch_from_akshare(n_days: int = 750) -> pd.DataFrame:
 
     for asset in CORE_UNIVERSE:
         sub = None
+        source = "akshare_sina"
         is_etf = asset.symbol.startswith(("51", "15"))
         prefix = "sh" if asset.symbol.startswith(("5", "6")) else "sz"
 
@@ -185,6 +192,7 @@ def _fetch_from_akshare(n_days: int = 750) -> pd.DataFrame:
 
         # 通道 2: 东方财富备用接口
         if sub is None or sub.empty:
+            source = "akshare_eastmoney"
             try:
                 if is_etf:
                     raw = ak.fund_etf_hist_em(
@@ -219,7 +227,9 @@ def _fetch_from_akshare(n_days: int = 750) -> pd.DataFrame:
                 sub = None
 
         if sub is not None and not sub.empty:
-            frames.append(_apply_split_qfq_adjustment(sub))
+            frames.append(_apply_split_qfq_adjustment(sub).assign(
+                data_origin=MARKET_DATA_SOURCE_ORIGINS[source], data_source=source,
+            ))
 
     if not frames:
         return pd.DataFrame()
@@ -350,4 +360,7 @@ def generate_realistic_ashare_panel(n_days: int = 750, seed: int = 42) -> pd.Dat
                 "volume": round(vol, 2),
                 "amount": round(vol * close_p, 2),
             })
-    return pd.DataFrame(rows).sort_values(["trade_date", "symbol"]).reset_index(drop=True)
+    return (
+        pd.DataFrame(rows).sort_values(["trade_date", "symbol"]).reset_index(drop=True)
+        .assign(data_origin="synthetic", data_source="synthetic_panel")
+    )

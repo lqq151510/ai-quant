@@ -8,6 +8,8 @@ def test_cli_refuses_sealed_interval_before_reading_nonexistent_input(tmp_path, 
                  "--out", str(tmp_path / "results")]) == 2
     assert "sealed test interval" in capsys.readouterr().err
     assert not (tmp_path / "results").exists()
+    assert main(["audit", str(tmp_path / "does-not-exist"), "--end", "2025-01-01"]) == 2
+    assert "audit command does not open the sealed test interval" in capsys.readouterr().err
 
 
 def test_etf_line_runs_without_stock_membership_data(tmp_path, monkeypatch):

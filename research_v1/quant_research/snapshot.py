@@ -6,9 +6,10 @@ import hashlib
 import json
 import os
 import tempfile
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import numpy as np
@@ -17,6 +18,8 @@ from .protocol import ETF_SYMBOLS, RESEARCH_START, ResearchPeriod
 
 TABLES = {"bars", "calendar", "actions", "membership", "securities", "news", "edges"}
 ORIGINS = {"market", "synthetic_fixture"}
+TABLE_DATES = {"bars": "date", "calendar": "date", "actions": "ex_date",
+               "membership": "effective_date", "securities": "listed_at"}
 BAR_COLUMNS = {
     "date", "symbol", "kind", "open", "high", "low", "close", "volume", "amount",
     "tradable", "upper_limit", "lower_limit",
@@ -63,22 +66,58 @@ def write_snapshot(
     return manifest
 
 
-def read_snapshot(path: Path) -> tuple[dict[str, Any], dict[str, pd.DataFrame]]:
+def read_snapshot(path: Path, *, end: date | None = None) -> tuple[dict[str, Any], dict[str, pd.DataFrame]]:
+    """Verify all file hashes and optionally materialize only the requested time window."""
     manifest = json.loads((path / "manifest.json").read_text(encoding="utf-8"))
     records = manifest["tables"]
     if manifest.get("schema_version") != 1 or manifest.get("origin") not in ORIGINS:
         raise ValueError("unsupported snapshot manifest")
     if not records or records.keys() - TABLES:
         raise ValueError("unexpected snapshot table")
-    frames = {}
+    files = {}
     for name, record in records.items():
         file = path / f"{name}.parquet"
         if file_sha256(file) != record["sha256"]:
             raise ValueError(f"snapshot hash mismatch: {name}")
+        files[name] = file
+    if end is not None:
+        return manifest, _read_bounded(files, records, end)
+    frames = {}
+    for name, file in files.items():
         frames[name] = pd.read_parquet(file)
-        if len(frames[name]) != record["rows"]:
+        if len(frames[name]) != records[name]["rows"]:
             raise ValueError(f"snapshot row count mismatch: {name}")
     return manifest, frames
+
+
+def _read_bounded(files: Mapping[str, Path], records: Mapping[str, dict], end: date) -> dict[str, pd.DataFrame]:
+    import duckdb
+
+    cutoff = datetime.combine(end + timedelta(days=1), time.min, ZoneInfo("Asia/Shanghai"))
+    frames = {}
+    with duckdb.connect(config={"threads": 1, "TimeZone": "UTC"}) as db:
+        for name, file in files.items():
+            path = str(file)
+            try:
+                count = db.execute("SELECT num_rows FROM parquet_file_metadata(?)", [path]).fetchone()[0]
+                if count != records[name]["rows"]:
+                    raise ValueError(f"snapshot row count mismatch: {name}")
+                columns = {row[0] for row in db.execute("DESCRIBE SELECT * FROM read_parquet(?)", [path]).fetchall()}
+                clauses, params = [], [path]
+                date_column = TABLE_DATES.get(name)
+                if date_column:
+                    clauses.append(f"TRY_CAST({date_column} AS DATE) <= ?")
+                    params.append(end)
+                timestamp_columns = {"news": ("ready_at",), "membership": ("known_at",),
+                                     "edges": tuple(c for c in ("known_at", "valid_from") if c in columns)}
+                for column in timestamp_columns.get(name, ()):
+                    clauses.append(f"TRY_CAST({column} AS TIMESTAMPTZ) < ?")
+                    params.append(cutoff)
+                where = " WHERE " + " AND ".join(clauses) if clauses else ""
+                frames[name] = db.execute("SELECT * FROM read_parquet(?)" + where, params).df()
+            except duckdb.Error as exc:
+                raise ValueError(f"cannot read bounded snapshot table {name}: {exc}") from exc
+    return frames
 
 
 def audit_snapshot(

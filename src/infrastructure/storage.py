@@ -6,6 +6,15 @@ import duckdb
 import pandas as pd
 
 
+def read_daily_bar_metadata(db_path: str) -> pd.DataFrame:
+    """Read only the metadata needed by the prototype research report."""
+    with duckdb.connect(str(db_path), read_only=True) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info('daily_bars')").fetchall()}
+        selected = ["symbol", "trade_date"]
+        selected.extend(column for column in ("data_origin", "data_source") if column in columns)
+        return conn.execute(f"SELECT {', '.join(selected)} FROM daily_bars").df()
+
+
 class QuantDuckDBStorage:
     """管理本地行情日线、截面特征及知识图谱关系边的 DuckDB 存储."""
 
@@ -34,6 +43,9 @@ class QuantDuckDBStorage:
                     PRIMARY KEY (symbol, trade_date)
                 );
             """)
+            # Legacy rows have no recorded source. Keep those columns NULL.
+            conn.execute("ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS data_origin VARCHAR")
+            conn.execute("ALTER TABLE daily_bars ADD COLUMN IF NOT EXISTS data_source VARCHAR")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS kg_edges (
                     src_symbol VARCHAR,
@@ -58,22 +70,33 @@ class QuantDuckDBStorage:
 
     def save_daily_bars(self, df: pd.DataFrame) -> int:
         """幂等写入或更新日线行情数据."""
-        if df.empty:
+        return self._write_daily_bars(df, replace=False)
+
+    def _write_daily_bars(self, df: pd.DataFrame, *, replace: bool) -> int:
+        if df.empty and not replace:
             return 0
-        required_cols = [
-            "symbol", "name", "sector", "trade_date",
-            "open", "high", "low", "close", "volume", "amount"
-        ]
-        clean_df = df[required_cols].copy()
-        clean_df["trade_date"] = pd.to_datetime(clean_df["trade_date"]).dt.date
+        if not df.empty:
+            required = ["symbol", "name", "sector", "trade_date",
+                        "open", "high", "low", "close", "volume", "amount"]
+            clean_df = df[required].copy()
+            clean_df["trade_date"] = pd.to_datetime(clean_df["trade_date"]).dt.date
+            clean_df["data_origin"] = df.get("data_origin")
+            clean_df["data_source"] = df.get("data_source")
         with self._connect() as conn:
-            conn.register("tmp_bars", clean_df)
-            conn.execute("""
-                INSERT OR REPLACE INTO daily_bars
-                SELECT * FROM tmp_bars
-            """)
-            conn.unregister("tmp_bars")
-        return len(clean_df)
+            conn.begin()
+            if replace:
+                conn.execute("DELETE FROM daily_bars")
+            if not df.empty:
+                conn.register("tmp_bars", clean_df)
+                conn.execute("""
+                    INSERT OR REPLACE INTO daily_bars (
+                        symbol, name, sector, trade_date, open, high, low, close, volume, amount,
+                        data_origin, data_source
+                    )
+                    SELECT * FROM tmp_bars
+                """)
+            conn.commit()
+        return len(df)
 
     def load_daily_bars(
         self,
@@ -116,10 +139,8 @@ class QuantDuckDBStorage:
             return conn.execute("SELECT * FROM kg_edges").df()
 
     def replace_all_daily_bars(self, df: pd.DataFrame) -> int:
-        """清空旧行情并写入最新全量真实行情表."""
-        with self._connect() as conn:
-            conn.execute("DELETE FROM daily_bars")
-        return self.save_daily_bars(df)
+        """在同一事务中替换行情及其来源标签。"""
+        return self._write_daily_bars(df, replace=True)
 
     def save_market_news(self, news_df: pd.DataFrame) -> int:
         """保存个股/ETF 最新财经新闻及情绪打分."""

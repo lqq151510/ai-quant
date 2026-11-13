@@ -17,16 +17,15 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import random
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
-import duckdb
 import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
@@ -42,7 +41,9 @@ if str(_RESEARCH_V1) not in sys.path:
 
 from quant_research.baseline import market_close_returns  # noqa: E402
 from quant_research.ledger import CloseState, Costs, normalize_actions, simulate  # noqa: E402
+from quant_research.protocol import HOLDOUT_START  # noqa: E402
 from quant_research.risk import block_resample, summarize  # noqa: E402
+from quant_research.snapshot import read_snapshot  # noqa: E402
 from quant_research.timeline import execution_schedule, open_labels, purge_training, sessions  # noqa: E402
 
 from src.domain.ensemble.gbdt_stacking import OrthogonalTreeGNNStacker  # noqa: E402
@@ -84,28 +85,13 @@ def _set_seed(seed: int) -> None:
     torch.manual_seed(seed)
 
 
-def _file_sha256(path: Path) -> str:
-    with path.open("rb") as stream:
-        return hashlib.file_digest(stream, "sha256").hexdigest()
-
-
-def load_audited_snapshot_via_duckdb(snapshot_dir: Path) -> Tuple[Dict[str, Any], Dict[str, pd.DataFrame]]:
-    """使用 DuckDB 原生读取并校验不可变 Parquet 快照 (无需 pyarrow 依赖)."""
-    snapshot_dir = Path(snapshot_dir).resolve()
-    manifest = json.loads((snapshot_dir / "manifest.json").read_text(encoding="utf-8"))
-    if manifest.get("schema_version") != 1:
-        raise ValueError("Unsupported snapshot schema_version")
-    frames: Dict[str, pd.DataFrame] = {}
-    with duckdb.connect(config={"threads": 1}) as con:
-        for name, record in manifest["tables"].items():
-            pq_path = snapshot_dir / f"{name}.parquet"
-            if _file_sha256(pq_path) != record["sha256"]:
-                raise ValueError(f"Snapshot SHA-256 mismatch for {name}")
-            df = con.execute("SELECT * FROM read_parquet(?)", [str(pq_path)]).df()
-            if len(df) != record["rows"]:
-                raise ValueError(f"Snapshot row count mismatch for {name}")
-            frames[name] = df
-    return manifest, frames
+def load_audited_snapshot_via_duckdb(
+    snapshot_dir: Path, *, end: date = date(2024, 12, 31),
+) -> Tuple[Dict[str, Any], Dict[str, pd.DataFrame]]:
+    """Read verified Parquet without materializing the sealed test interval."""
+    if end >= HOLDOUT_START:
+        raise ValueError("Refusing to enter sealed holdout period during model selection/ablation")
+    return read_snapshot(Path(snapshot_dir).resolve(), end=end)
 
 
 @dataclass
@@ -1016,11 +1002,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--out", type=Path, required=True, help="New output directory for report and artifacts")
     args = parser.parse_args(argv)
 
-    if pd.Timestamp(args.end).date() >= pd.Timestamp("2025-01-01").date():
+    end = pd.Timestamp(args.end).date()
+    if end >= HOLDOUT_START:
         raise ValueError("Refusing to enter sealed holdout period (>= 2025-01-01) during model selection/ablation")
     args.out.mkdir(parents=True, exist_ok=False)
 
-    manifest, frames = load_audited_snapshot_via_duckdb(args.snapshot)
+    manifest, frames = load_audited_snapshot_via_duckdb(args.snapshot, end=end)
     cal_df = frames["calendar"]
     cal_dates = pd.to_datetime(cal_df["date"]).dt.normalize()
     cal_dates = cal_dates[cal_dates <= pd.Timestamp(args.end)]

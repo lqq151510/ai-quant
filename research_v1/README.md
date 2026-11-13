@@ -45,7 +45,7 @@ uv run --frozen --extra models python -m quant_research.cli baseline /absolute/s
 
 ## 时间与研究约束
 
-- 预登记 ETF 为510050、510300、510500、510880。2015—2022开发，2023—2024选模，2025起封存；本版 `baseline` 命令拒绝进入封存段。
+- 预登记 ETF 为510050、510300、510500、510880。2015—2022开发，2023—2024选模，2025起封存。常规 `audit`、`baseline` 和原型滚动研究入口在打开快照前拒绝封存日期，读取历史数据时按日期筛选后再生成研究表。
 - 完整收盘信息生成信号，下一交易日开盘模拟执行。标签从 `t+1` 开盘至 `t+h+1` 开盘，h仅5或20。训练样本的标签结束时间必须严格早于下一分区。
 - 个股按历史成分快照（需已知时间）与严格此前60个交易日成交额每月筛前50只，缺数据不退回当前股票池。供应商历史成分是周快照，不能据查询日期伪造调整公告的已知时间。
 - 原始价格模拟成交；公司行动分别处理份额、应收、到账。累计分红序列不具备完整现金账本所需字段。510500在2015/2022发生份额变化，未核实前不能发布完整收益结论。
@@ -55,11 +55,42 @@ uv run --frozen --extra models python -m quant_research.cli baseline /absolute/s
 
 `ledger.simulate(bars, calendar, targets, actions, initial_cash=..., cost=Costs())` 接受执行日目标权重，记录实际股数、费用、现金与未成交原因。无交易时份额不变、权重随价格自然漂移。
 
+六档虚拟资金的 ETF 动量对照使用同一组信号和份额账本。运行 `python -m quant_research.capital_scale --snapshot <ETF快照> --out <新目录>` 生成账本、报告和曲线。2023–2024 年样本中，从 1,000 元到 500,000 元的六档均为扣费亏损，未通过本轮规模筛查，封存评估尚未开启。
+
+### 前向模拟买入观察
+
+将每次观察保存成 JSON，在研究环境运行 `quant-research paper-entry observation.json > decision.json`。示例使用演示数字：
+
+```json
+{
+  "symbol": "510300.SH",
+  "as_of": "2026-11-16T09:35:05+08:00",
+  "signal": true,
+  "signal_at": "2026-11-13T15:00:00+08:00",
+  "expires_at": "2026-11-16T10:00:00+08:00",
+  "limit_price": "4.135",
+  "ordered_units": 100,
+  "max_quote_age_seconds": 10,
+  "quote": {
+    "symbol": "510300.SH",
+    "at": "2026-11-16T09:35:03+08:00",
+    "ask_price": "4.135",
+    "ask_units": 100
+  }
+}
+```
+
+事前记录信号有效期、限价、数量和允许的报价延迟。卖一数量统一填股或份，平台显示为手时先换算。信号无记录填 `null`，确认未触发填 `false`。缺盘口时填 `"quote": null`。输出保留原始观察及原因，例如 `signal_not_triggered`、`quote_stale`、`ask_above_limit` 或 `within_limit`。
+
+`eligible: true` 表示这次盘口观察满足原计划的买入条件。平台是否收到委托、是否成交以及实际费用，仍以同花顺明细为准，复盘时附在对应的观察记录上。
+
 `bars` 必需列：date、symbol、kind(stock/etf)、open、high、low、close、volume、amount、tradable、upper_limit、lower_limit。缺限价会拒单；持仓无可核收盘价会停止。可选 preclose 用于发现未解释的除权。
 
 `actions` 必需列：symbol、ex_date、pay_date、cash_per_share、share_multiplier；可选 record_date、share_available_date。现金分红在除息时形成应收、发放后才可交易；股份变化出现小数份额时要求现金替代或准确分配证据，不默默舍入。cash_per_share按输入实入金额，个股持有期差异分红税尚须上游提供，不能把税前现金当个人税后收益。
 
 默认佣金万三、最低5元、单边滑点5基点是研究假设。股票印花税、过户费按生效日期分段；默认股票过户费证据表只覆盖2015-08-01起，更早股票成交将停止，不能悄悄改研究起点。`Costs.stressed()`仅将佣金、最低佣金和滑点翻倍。
+
+使用 `quant-research paper-entry observation.json --news artifacts/news-forward/2026-11-13.json` 可以对照原规则和新闻过滤结果。从项目根目录运行，可重复传入 `--news` 加载多日采集文件。候选规则在原规则满足买入条件、且过去 72 小时内首次采集到同一证券的股票交易异常波动公告时暂缓。证券代码使用带交易所后缀的形式，例如 `603135.SH`。同一公告用相同事件标识和来源，跨日重见沿用最早采集时间。若需判断是否已超过 72 小时，应传入已有历史批次。决策之后的采集记录不参与当时判断。覆盖情况和触发公告会随结果输出。样本为定向采集，覆盖状态为 `unknown` 时无法推断该标的没有新闻。
 
 ## 前向新闻、舆论与图谱
 

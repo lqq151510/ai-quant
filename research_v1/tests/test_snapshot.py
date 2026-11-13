@@ -1,3 +1,6 @@
+import json
+from datetime import date
+
 import pandas as pd
 import pytest
 
@@ -19,6 +22,34 @@ def test_immutable_snapshot_and_tamper_detection(tmp_path):
         output.write(b"tampered")
     with pytest.raises(ValueError, match="hash mismatch"):
         read_snapshot(path)
+
+
+def test_bounded_read_filters_before_materialization_and_checks_full_counts(tmp_path, monkeypatch):
+    path = tmp_path / "snapshot"
+    dates = pd.to_datetime(["2024-12-31", "2025-01-01"])
+    timestamps = ["2024-12-31T23:59:59+08:00", "2024-12-31T16:00:00Z"]
+    data = {
+        "bars": pd.DataFrame({"date": dates}),
+        "calendar": pd.DataFrame({"date": dates}),
+        "actions": pd.DataFrame({"ex_date": dates}),
+        "membership": pd.DataFrame({"effective_date": [dates[0]] * 2, "known_at": timestamps}),
+        "securities": pd.DataFrame({"listed_at": dates}),
+        "news": pd.DataFrame({"ready_at": timestamps}),
+        "edges": pd.DataFrame({"known_at": timestamps, "valid_from": timestamps}),
+    }
+    manifest = write_snapshot(path, origin="synthetic_fixture", frames=data, sources=[])
+
+    def forbid_full_read(*args, **kwargs):
+        raise AssertionError("bounded path must not use the unfiltered reader")
+
+    monkeypatch.setattr(pd, "read_parquet", forbid_full_read)
+    _, frames = read_snapshot(path, end=date(2024, 12, 31))
+    assert all(len(frame) == 1 for frame in frames.values())
+    assert frames["news"]["ready_at"].tolist() == [timestamps[0]]
+    manifest["tables"]["bars"]["rows"] = 1
+    (path / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(ValueError, match="row count mismatch: bars"):
+        read_snapshot(path, end=date(2024, 12, 31))
 
 
 def test_fixture_and_unverified_market_are_not_market_evidence(tmp_path):

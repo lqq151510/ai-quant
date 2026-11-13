@@ -1,11 +1,12 @@
-"""控制器层：真实 A股/ETF 历史行情 + 动态知识图谱 Graph-Agent + 5大高阶正交算法全链路消融与实盘计划主入口."""
+"""控制器层：旧版 A 股和 ETF 原型研究入口。"""
 
+import argparse
 import random
 import numpy as np
 import torch
 
 from src.application.graph_agent import KnowledgeGraphAgent
-from src.application.trading_plan_generator import generate_semi_auto_trading_plan
+from src.application.trading_plan_generator import DEFAULT_REPORT, write_prototype_research_report
 from src.application.trainer import (
     evaluate_predictions_direct,
     get_device,
@@ -35,7 +36,10 @@ from src.infrastructure.market_data import (
     build_initial_kg_edges,
     fetch_or_generate_market_data,
 )
-from src.infrastructure.storage import QuantDuckDBStorage
+from src.infrastructure.storage import QuantDuckDBStorage, read_daily_bar_metadata
+
+
+DEFAULT_DATABASE = "data/quant_market.duckdb"
 
 
 def set_all_seeds(seed: int = 42) -> None:
@@ -45,13 +49,15 @@ def set_all_seeds(seed: int = 42) -> None:
 
 
 def main() -> None:
+    # 先替换旧输出，行情下载或训练失败时仍只留下研究状态。
+    write_prototype_research_report()
     set_all_seeds(42)
     print("=" * 84)
-    print("🚀 AI 量化实战全链路工作台 (真实 A股/ETF 行情 + 动态 KG-Agent + DL/GNN/PPO)")
+    print("AI 量化原型研究工作台（历史或合成行情）")
     print("=" * 84)
 
-    # 1. 基础设施层：优先复用 DuckDB 已入库的真实前复权日线，若存在未复权拆分跳空则自动重刷
-    storage = QuantDuckDBStorage("data/quant_market.duckdb")
+    # 1. 基础设施层：优先复用已入库的原型日线。
+    storage = QuantDuckDBStorage(DEFAULT_DATABASE)
     bars_df = storage.load_daily_bars()
     has_unadjusted_split = (
         not bars_df.empty
@@ -60,13 +66,15 @@ def main() -> None:
     if bars_df.empty or bars_df["symbol"].nunique() < len(CORE_UNIVERSE) or has_unadjusted_split:
         bars_df = fetch_or_generate_market_data(n_days=750, try_online_akshare=True, seed=42)
         storage.replace_all_daily_bars(bars_df)
+    write_prototype_research_report(bars_df)
+    print(f"已发布原型研究状态与行情来源至 {DEFAULT_REPORT}")
     init_edges_df = build_initial_kg_edges()
     storage.save_kg_edges(init_edges_df)
     n_bars = len(bars_df)
     min_dt = bars_df["trade_date"].min().strftime("%Y-%m-%d")
     max_dt = bars_df["trade_date"].max().strftime("%Y-%m-%d")
     print(
-        f"[Step 1 | 真实行情底座] DuckDB 已入库 {n_bars} 条真实前复权日线 "
+        f"[Step 1 | 原型行情] DuckDB 已入库 {n_bars} 条日线 "
         f"({bars_df['symbol'].nunique()} 只核心 ETF/龙头, 区间: {min_dt} -> {max_dt})"
     )
 
@@ -159,7 +167,7 @@ def main() -> None:
     print(
         f"[Step 4 | HMM+最优传输] 最新交易日 ({latest_regime.trade_date.strftime('%Y-%m-%d')}) 状态: "
         f"{latest_regime.state_name} | 1D-Wasserstein W2={latest_regime.wasserstein_w2:.4f} "
-        f"(左尾偏移={latest_regime.ot_left_tail_shift:+.3f}) | 建议最大权益敞口: {latest_regime.recommended_max_exposure * 100:.1f}%"
+        f"(左尾偏移={latest_regime.ot_left_tail_shift:+.3f}) | 模型内模拟权益上限 {latest_regime.recommended_max_exposure * 100:.1f}%"
     )
 
     # 5C. 新增算法 4 + 数据升级 1 + 算法升级 A/C：Löwdin 正交化 + 概念漂移衰减 GBDT + 主力资金流微结构 + KG-GAT
@@ -220,9 +228,9 @@ def main() -> None:
         hmm_max_exposures=test_hmm_exposures,
     )
 
-    # 7. 打印真实 A 股样本外测试集消融对比表
+    # 7. 打印原型内部时间切分的消融对比表
     print("\n" + "-" * 90)
-    print(f"📊 真实 A股/ETF 样本外测试集 ({test_ds.dates[0].strftime('%Y-%m-%d')} -> {test_ds.dates[-1].strftime('%Y-%m-%d')}) 全链路消融实验:")
+    print(f"原型研究消融实验，内部测试段 {test_ds.dates[0]:%Y-%m-%d} 至 {test_ds.dates[-1]:%Y-%m-%d}")
     print("-" * 90)
     header = (
         f"{'阶段与模型架构':<36} | {'IC均值':>7} | {'RankIC':>7} | {'ICIR':>6} | "
@@ -257,26 +265,18 @@ def main() -> None:
         f"Stage 3B (HRP + HMM + IQL) 平均现金比例 = {m_iql_hrp.avg_cash_weight * 100:.1f}%"
     )
 
-    # 8. Stage 4：生成基于最新收盘日的半自动实盘交易计划单 (融合 HMM 状态、CQR 区间与 HRP 权重)
-    plan_md = generate_semi_auto_trading_plan(
-        bars_df=loaded_bars,
-        kg_model=stage2_kg_model,
-        asset_sentiments=kg_update_res.asset_sentiment_map,
-        news_df=kg_update_res.scored_news_df,
-        avg_rl_cash_weight=m_iql_hrp.avg_cash_weight,
-        latest_regime=latest_regime,
-        latest_q10=uncertainty_res.q10_lower[-1],
-        latest_q90=uncertainty_res.q90_upper[-1],
-        hist_raw_rets=test_ds.y_raw_ret,
-        output_path="data/latest_trading_plan.md",
-    )
-    print("\n" + "=" * 84)
-    print("✅ 已生成最新《A股/ETF 半自动实盘辅助交易计划单》-> data/latest_trading_plan.md")
-    print("=" * 84)
-    # 打印计划单前 18 行核心摘要
-    for line in plan_md.splitlines()[:25]:
-        print(line)
+
+def cli(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--report-only", action="store_true", help="只读行情元数据并刷新研究状态页")
+    args = parser.parse_args(argv)
+    if args.report_only:
+        bars = read_daily_bar_metadata(DEFAULT_DATABASE)
+        write_prototype_research_report(bars, output_path=DEFAULT_REPORT)
+        print(f"已发布原型研究状态与行情来源至 {DEFAULT_REPORT}")
+        return
+    main()
 
 
 if __name__ == "__main__":
-    main()
+    cli()

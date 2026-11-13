@@ -1,22 +1,30 @@
 """Regressions for individual stock limits in portfolio targets and plan output."""
 
-from pathlib import Path
-from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
-import torch
 
-from src.application import trading_plan_generator as plans
 from src.application.walk_forward_engine import _stock_mask_from_bars, apply_turnover_deadband
-from src.domain.portfolio.stock_limits import limit_stock_weights
-from src.domain.regime.market_hmm import MarketRegimeSnapshot
+from src.domain.portfolio.stock_limits import apply_lot_constraints, limit_stock_weights
 from src.infrastructure.market_data import CORE_UNIVERSE, AssetMeta
 
 
 class TestStockLimits(unittest.TestCase):
+    def test_lot_constraints_keep_unallocated_weight_in_cash(self):
+        weights = np.array([0.087, 0.10, 0.10, 0.02])
+        executable, reasons = apply_lot_constraints(weights, np.array([110.90, 7.00, 5.00, np.nan]), 14000)
+        np.testing.assert_allclose(executable, [0, 0.10, 1000 / 14000, 0])
+        self.assertEqual(reasons, ["target_below_one_lot", None, None, "reference_price_unavailable"])
+        np.testing.assert_array_equal(weights, [0.087, 0.10, 0.10, 0.02])
+
+    def test_lot_constraints_respect_custom_lot_and_validate_targets(self):
+        executable, reasons = apply_lot_constraints([0.3], [0.1], 1000, lot=1000)
+        np.testing.assert_array_equal(executable, [0.3])
+        self.assertEqual(reasons, [None])
+        with self.assertRaisesRegex(ValueError, "total NAV"):
+            apply_lot_constraints([0.8, 0.4], [1, 1], 1000)
+
     def test_five_percent_nav_cap_leaves_released_weight_in_cash(self):
         weights = np.array([0.25, 0.06, 0.40])
         mask = np.array([True, True, False])
@@ -93,64 +101,6 @@ class TestStockLimits(unittest.TestCase):
         self.assertEqual(AssetMeta("000001", "Stock", "Sector", True).kind, "stock")
         self.assertEqual({asset.symbol for asset in CORE_UNIVERSE if asset.kind == "etf"},
                          {"512480", "515880", "515790", "510880", "510300", "518880", "513100"})
-
-
-class TestStockLimitsInPlan(unittest.TestCase):
-    def generate_plan(self, *, hrp: bool, stock_eligible=True, etf_eligible=True):
-        day = pd.Timestamp("2024-12-24")
-        symbols = ["002594", "510300"]
-        snapshot = pd.DataFrame({
-            "symbol": symbols, "close": [10.0, 10.0], "atr_14": [0.5, 0.5], "ret_1d_raw": [0.0, 0.0],
-            "ma_20": [9.0 if stock_eligible else 11.0, 9.0 if etf_eligible else 11.0],
-        })
-        model_returns = np.array([0.8, 0.2])
-        if not stock_eligible:
-            model_returns = np.array([0.0, 1.0])
-        if not etf_eligible:
-            model_returns = np.array([1.0, 0.0])
-        regime = MarketRegimeSnapshot(day, 0, "测试状态", np.array([1, 0, 0]), 0.4)
-        with TemporaryDirectory() as directory:
-            output = Path(directory) / "plan.md"
-            with (
-                patch.object(plans, "infer_latest_live_alpha", return_value=(day, symbols, np.array([0.2, 0.1]), np.zeros(2))),
-                patch.object(plans, "compute_latest_atr_and_snapshot", return_value=snapshot),
-                patch.object(plans.HierarchicalRiskParityOptimizer, "allocate_hrp_weights", return_value=model_returns) as allocator,
-                patch.object(plans, "build_alpha_risk_prior", return_value=torch.log(torch.tensor([[8.0, 2.0, 1.0]]))) as fallback,
-            ):
-                report = plans.generate_semi_auto_trading_plan(
-                    pd.DataFrame(), torch.nn.Identity(), {}, pd.DataFrame(), 0.0,
-                    latest_regime=regime, hist_raw_rets=np.zeros((20, 2)) if hrp else None, output_path=str(output),
-                )
-            self.assertEqual(output.read_text(encoding="utf-8"), report)
-            self.assertEqual(allocator.called, hrp)
-            self.assertEqual(fallback.called, not hrp)
-        return report
-
-    def test_both_allocators_apply_gross_cap_and_stock_cap_before_cash_reporting(self):
-        for hrp in (True, False):
-            with self.subTest(hrp=hrp):
-                report = self.generate_plan(hrp=hrp)
-                self.assertIn("002594 32.00%→5.00%", report)
-                self.assertIn("建议账户总仓位**: **13.0%", report)
-                self.assertIn("建议现金防守仓位**: **87.0%", report)
-                self.assertIn("总净值 5%、目标持仓市值 50%", report)
-                stock_row = next(line for line in report.splitlines() if "`002594`" in line)
-                etf_row = next(line for line in report.splitlines() if "`510300`" in line)
-                self.assertIn("**5.0%**", stock_row)
-                self.assertIn("**8.0%**", etf_row)
-
-    def test_only_stock_has_zero_weight_and_no_buy_zone_in_both_allocators(self):
-        for hrp in (True, False):
-            with self.subTest(hrp=hrp):
-                report = self.generate_plan(hrp=hrp, etf_eligible=False)
-                self.assertIn("建议现金防守仓位**: **100.0%", report)
-                stock_row = next(line for line in report.splitlines() if "`002594`" in line)
-                self.assertIn("**0.0%** | ⏸️ 暂不配置 | `--`", stock_row)
-
-    def test_only_etf_is_eligible_up_to_the_gross_cap(self):
-        report = self.generate_plan(hrp=True, stock_eligible=False)
-        self.assertIn("建议账户总仓位**: **40.0%", report)
-        self.assertIn("无个股权重截断", report)
 
 
 if __name__ == "__main__":
