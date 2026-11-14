@@ -199,6 +199,10 @@ class ForwardStudyIntegration(unittest.TestCase):
                 collector.assert_called_once()
 
     def test_partial_capture_finalizes_without_network_after_cutoff(self):
+        stock, etf = '601988.SH', '513100.SH'
+        failure = {'source': 'tencent', 'error': 'market request exceeded its deadline'}
+        tencent_requested = False
+
         class Clock(datetime):
             current = DATES[0] + 'T09:45:10+08:00'
 
@@ -207,16 +211,20 @@ class ForwardStudyIntegration(unittest.TestCase):
                 return cls.fromisoformat(cls.current).astimezone(tz)
 
         def interrupt_after_sina(url, timeout):
+            nonlocal tencent_requested
             if url.startswith(collect_books.SOURCES['tencent']):
+                if not tencent_requested:
+                    tencent_requested = True
+                    raise TimeoutError(failure['error'])
                 raise KeyboardInterrupt('before 513100 receives a quote')
             return Clock.current, sina_book()
 
         with TemporaryDirectory() as directory:
             output = Path(directory) / 'capture'
             argv = ['collect_books.py', '--date', DATES[0], '--out', str(output),
-                    '--require-513100-iopv', '601988.SH', '513100.SH']
+                    '--require-513100-iopv', stock, etf]
             with patch.object(collect_books, 'datetime', Clock), patch.object(sys, 'argv', argv):
-                with patch.object(collect_books, 'capture', interrupt_after_sina):
+                with patch.object(collect_books, 'capture', interrupt_after_sina), patch.object(collect_books.time, 'sleep'):
                     with self.assertRaises(KeyboardInterrupt):
                         collect_books.main()
                 checkpoint = json.loads((output / 'capture-progress.json').read_text())
@@ -227,9 +235,25 @@ class ForwardStudyIntegration(unittest.TestCase):
                     request.assert_not_called()
             final = json.loads((output / 'books.json').read_text())
             self.assertEqual(final['selected'], checkpoint['selected'])
-            self.assertEqual(final['unavailable'], {'513100.SH': 'quote_unavailable'})
-            raw_file = final['selected']['601988.SH']['raw_file']
+            self.assertEqual(final['unavailable'], {etf: 'quote_unavailable'})
+            raw_file = final['selected'][stock]['raw_file']
             self.assertEqual((output / raw_file).read_bytes(), sina_book())
+            verified = verify_capture(final, output, date.fromisoformat(DATES[0]), [stock, etf])
+            prepared = {'coverage': 'synthetic', 'candidates': [
+                {'symbol': stock, 'tick': '.01', 'previous_close': '7.18', 'kind': 'stock', 'cross_border': False},
+                {'symbol': etf, 'tick': '.001', 'previous_close': '2.23', 'kind': 'etf', 'cross_border': True},
+            ]}
+            opening = {'mode': 'forward', **run(prepared, verified, [])}
+            daily, summary = synthetic_close(opening, {stock: '7.20'})
+            for group in GROUPS:
+                metrics = summary['groups'][group]
+                self.assertEqual(metrics['buy_count'], 1)
+                self.assertEqual(metrics[etf]['status'], 'quote_unavailable')
+                self.assertIsNone(metrics[etf]['premium'])
+                self.assertEqual(metrics[etf]['quote_request_failure'], failure)
+                self.assertEqual(metrics['unfilled_orders'][0]['quote_request_failure'], failure)
+            gaps = weekly_report([daily])['execution_evidence_gaps']
+            self.assertEqual([gap['quote_request_failure'] for gap in gaps], [failure, failure])
 
 
     def test_evening_replay_requires_a_recorded_capture_attempt(self):

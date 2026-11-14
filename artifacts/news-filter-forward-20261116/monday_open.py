@@ -11,7 +11,7 @@ from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from pathlib import Path
 
 from collect_books import CST, IOPV_SYMBOL, quote_status
-from book_evidence import verify_capture
+from book_evidence import record_quote_request_failure, verify_capture
 from scheduled_open import capture_directory
 from quant_research.ledger import Costs
 from quant_research.news_entry import compare_news_entry
@@ -169,6 +169,7 @@ def run(prepared, books, news, *, news_errors=(), news_captured_at=None):
                          evaluation=verdict, quote_error=quote_error)
             if book is None and symbol in last_observations:
                 entry['last_observation'] = last_observations[symbol]
+            record_quote_request_failure(books, entry)
             account['decisions'].append(entry)
     return {'date': str(DAY), 'coverage': prepared['coverage'], 'news_errors': list(news_errors),
             'prior_closes': {row['symbol']: row['previous_close'] for row in prepared['candidates']},

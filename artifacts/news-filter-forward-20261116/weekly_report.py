@@ -301,6 +301,8 @@ def weekly_report(records, *, artifact_gaps=()):
                               quote_evidence_detail(row.get('book_evidence_errors') or {}, decision))
                     if detail:
                         gap['detail'] = detail
+                    if request_failure := decision.get('quote_request_failure'):
+                        gap['quote_request_failure'] = request_failure
                     evidence_gaps.append(gap)
         for symbol in sorted(baseline['positions'].keys() & filtered['positions'].keys()):
             a, b = (account['close_prices'].get(symbol) for account in (baseline, filtered))

@@ -75,9 +75,11 @@ def execution_details(row):
     except (TypeError, ValueError):
         pass
     quantity_key = 'bid_units' if side == 'sell' else 'ask_units'
+    request_failure = row.get('quote_request_failure')
     return {'side': side, 'required_units': row.get('required_units'),
             'available_units': row.get('available_units', book.get(quantity_key)),
             'quote_age_seconds': quote_age, 'diagnostic_quote_only': bool(observed and not book),
+            **({'quote_request_failure': request_failure} if request_failure else {}),
             **({'diagnostic_visible_units': observed.get(quantity_key)} if observed and not book else {})}
 
 

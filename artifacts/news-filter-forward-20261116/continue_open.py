@@ -9,7 +9,7 @@ from datetime import date, datetime, time, timedelta
 from decimal import Decimal, ROUND_FLOOR
 
 from collect_books import CST, quote_status
-from book_evidence import verify_capture
+from book_evidence import record_quote_request_failure, verify_capture
 from close_monday import SESSIONS, prior_paths, validate_prior
 from monday_open import BASE, DAY, IOPV_SYMBOL, PROTOCOL, decide, news_snapshot, publish_once, tick_price
 from quant_research.ledger import Costs
@@ -118,6 +118,7 @@ def run_day(day, previous, prepared, captured, snapshot):
                             available_units=book.get('bid_units') if book else None)
             if book is None and symbol in last_observations:
                 decision['last_observation'] = last_observations[symbol]
+            record_quote_request_failure(captured, decision)
             decisions.append(decision)
         nav = prior.get('nav')
         budget = min(Decimal(5000), Decimal(nav) * Decimal('.05')) if nav is not None else None
@@ -159,6 +160,7 @@ def run_day(day, previous, prepared, captured, snapshot):
                             available_units=book.get('ask_units') if book else None, evaluation=evaluation)
             if book is None and symbol in last_observations:
                 decision['last_observation'] = last_observations[symbol]
+            record_quote_request_failure(captured, decision)
             decisions.append(decision)
         accounts[group] = dict(cash=str(cash), positions=positions, fills=fills, decisions=decisions)
     return {'mode': 'forward', 'date': str(day), 'prior_closes': prior_closes,

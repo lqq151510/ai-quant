@@ -73,6 +73,7 @@ def rebuild_attempts(attempts, directory, day, universe, held):
     exit_failures = {}
     response_rows, fresh, two_sided = set(), set(), set()
     last_observations = {}
+    request_failures = {'buy': {}, 'sell': {}}
     prior_iopv, last_received = None, None
     for attempt in attempts:
         if not isinstance(attempt, dict):
@@ -84,6 +85,14 @@ def rebuild_attempts(attempts, directory, day, universe, held):
         try:
             requested = request_symbols(attempt, universe)
             if 'raw_file' not in attempt and isinstance(attempt.get('error'), str):
+                source, error = attempt['source'], attempt['error']
+                if error.strip():
+                    for symbol in requested.values():
+                        detail = {'source': source, 'error': error}
+                        if source == 'tencent' or (symbol != IOPV_SYMBOL and symbol not in held):
+                            request_failures['buy'][symbol] = detail
+                        if source == 'tencent' and symbol in held:
+                            request_failures['sell'][symbol] = detail
                 continue
             received, books, errors = read_attempt(attempt, directory, requested, day)
             if last_received is not None and received < last_received:
@@ -153,7 +162,7 @@ def rebuild_attempts(attempts, directory, day, universe, held):
     coverage = {'response_row_symbols': sorted(response_rows), 'received_symbols': sorted(last_observations),
                 'fresh_symbols': sorted(fresh), 'two_sided_symbols': sorted(two_sided)}
     audit_failures = {'selected': failed_before_entry, 'exit_selected': failed_before_exit}
-    return audited, entries, exits, by_file, exit_failures, coverage, last_observations, audit_failures
+    return audited, entries, exits, by_file, exit_failures, coverage, last_observations, audit_failures, request_failures
 
 
 def verify_capture(captured, directory, day, symbols, *, held=(), buy_symbols=None):
@@ -168,7 +177,7 @@ def verify_capture(captured, directory, day, symbols, *, held=(), buy_symbols=No
     directory = Path(directory)
     universe = {market_code(symbol): symbol for symbol in symbols}
     held = set(held).intersection(universe.values())
-    audited, entries, exits, by_file, exit_failures, coverage, observations, audit_failures = (
+    audited, entries, exits, by_file, exit_failures, coverage, observations, audit_failures, request_failures = (
         rebuild_attempts(attempts, directory, day, universe, held))
     if universe and not any('evidence_error' not in attempt for attempt in audited):
         raise ValueError('capture has no verifiable quote attempts')
@@ -254,4 +263,13 @@ def verify_capture(captured, directory, day, symbols, *, held=(), buy_symbols=No
         'sell_book_symbols': sorted(output['exit_selected'].keys() & held),
     }
     output['last_observations'] = observations
+    output['quote_request_failures'] = request_failures
     return output
+
+
+def record_quote_request_failure(capture, decision):
+    """Retain the latest request failure when a decision lacks a specific quote reason."""
+    if decision['reason'] == 'quote_unavailable':
+        failures = capture.get('quote_request_failures', {}).get(decision['side'], {})
+        if failure := failures.get(decision['symbol']):
+            decision['quote_request_failure'] = failure
