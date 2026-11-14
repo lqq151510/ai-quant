@@ -40,13 +40,13 @@ if str(_RESEARCH_V1) not in sys.path:
     sys.path.insert(0, str(_RESEARCH_V1))
 
 from quant_research.baseline import market_close_returns  # noqa: E402
-from quant_research.ledger import CloseState, Costs, normalize_actions, simulate  # noqa: E402
+from quant_research.ledger import CloseState, Costs, normalize_actions, opening_execution_price, simulate  # noqa: E402
 from quant_research.protocol import HOLDOUT_START  # noqa: E402
 from quant_research.risk import block_resample, summarize  # noqa: E402
 from quant_research.snapshot import read_snapshot  # noqa: E402
 from quant_research.timeline import execution_schedule, open_labels, purge_training, sessions  # noqa: E402
 
-from src.domain.ensemble.gbdt_stacking import OrthogonalTreeGNNStacker  # noqa: E402
+from src.domain.ensemble.gbdt_stacking import OrthogonalTreeGNNStacker, iter_observed_cross_sections  # noqa: E402
 from src.domain.features.pipeline import (  # noqa: E402
     FEATURE_COLUMNS,
     MICRO_FEATURE_COLUMNS,
@@ -58,6 +58,7 @@ from src.domain.kg_gnn.bitemporal_kg_bridge import (  # noqa: E402
     BitemporalKGBundle,
     build_bitemporal_bundle_from_news_and_edges,
     compute_bitemporal_3hop_features_and_adjacency,
+    has_versioned_relation_columns,
 )
 from src.domain.kg_gnn.graph_model import SpatioTemporalKGAlphaModel, build_hybrid_kg_adjacency  # noqa: E402
 from src.domain.portfolio.hrp import HierarchicalRiskParityOptimizer  # noqa: E402
@@ -109,6 +110,15 @@ class OpenToOpenPanelDataset:
     close_returns: pd.DataFrame  # 完整交易日历上的已实现收盘收益，仅供风控输入
 
 
+def _normalize_observed_labels(returns: pd.Series) -> np.ndarray:
+    values = returns.to_numpy()
+    observed = np.isfinite(values)
+    normalized = np.full(values.shape, np.nan)
+    if observed.any():
+        normalized[observed] = cross_sectional_mad_zscore(values[observed])
+    return normalized
+
+
 def build_open_to_open_panel(
     bars_df: pd.DataFrame,
     calendar_dates: Sequence[pd.Timestamp],
@@ -146,18 +156,14 @@ def build_open_to_open_panel(
     all_feat_cols = FEATURE_COLUMNS + MICRO_FEATURE_COLUMNS
     # 仅剔除前 20 日滚动窗口预热期与末尾无 label_end 日期；单只停牌股不丢弃整日截面！
     feat_df = feat_df.dropna(subset=all_feat_cols + ["label_end"]).copy()
-    feat_df["target_return"] = feat_df.groupby("date")["target_return"].transform(
-        lambda s: s.fillna(s.median() if s.notna().any() else 0.0)
-    )
+    feat_df["target_return"] = feat_df["target_return"].where(np.isfinite(feat_df["target_return"]))
 
     # 3. 单日截面 MAD 去极值 + Z-Score 标准化
     for col in all_feat_cols:
         feat_df[col] = feat_df.groupby("date")[col].transform(
             lambda s: pd.Series(cross_sectional_mad_zscore(s.fillna(0.0).to_numpy()), index=s.index)
         )
-    feat_df["target_alpha_z"] = feat_df.groupby("date")["target_return"].transform(
-        lambda s: pd.Series(cross_sectional_mad_zscore(s.to_numpy()), index=s.index)
-    )
+    feat_df["target_alpha_z"] = feat_df.groupby("date")["target_return"].transform(_normalize_observed_labels)
 
     valid_dates = (
         feat_df.groupby("date")["symbol"]
@@ -235,8 +241,9 @@ def _train_fold_kg_gat_and_stacker(
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
     _, n_assets, seq_len, n_feats = x_tr.shape
 
-    # 仅使用当前折叠训练集估计混合先验邻接矩阵 (零未来泄漏)
-    hybrid_adj = build_hybrid_kg_adjacency(symbols, base_edges_df, x_tr).to(device)
+    # 带版本的显式关系只从逐日邻接矩阵进入模型，避免固定先验绕过生效时间或撤回。
+    static_edges = base_edges_df.iloc[:0] if has_versioned_relation_columns(base_edges_df) else base_edges_df
+    hybrid_adj = build_hybrid_kg_adjacency(symbols, static_edges, x_tr).to(device)
     model = SpatioTemporalKGAlphaModel(
         adj_prior=hybrid_adj,
         in_features=n_feats,
@@ -246,7 +253,10 @@ def _train_fold_kg_gat_and_stacker(
         dropout=0.15,
     ).to(device)
 
-    # 联合训练 iTransformer + PatchTST + 动态 KG 投影头
+    # 跳过整日均无标签的训练样本，避免优化器仅因权重衰减更新参数。
+    supervised_days = np.isfinite(y_tr).any(axis=1)
+    if not supervised_days.any() or not np.isfinite(y_val).any():
+        raise ValueError("walk-forward fold requires observed labels in both training and validation")
     for param in model.parameters():
         param.requires_grad = True
 
@@ -255,9 +265,9 @@ def _train_fold_kg_gat_and_stacker(
 
     loader = DataLoader(
         TensorDataset(
-            torch.tensor(x_tr, dtype=torch.float32),
-            torch.tensor(y_tr, dtype=torch.float32),
-            torch.tensor(adj_tr, dtype=torch.float32),
+            torch.tensor(x_tr[supervised_days], dtype=torch.float32),
+            torch.tensor(y_tr[supervised_days], dtype=torch.float32),
+            torch.tensor(adj_tr[supervised_days], dtype=torch.float32),
         ),
         batch_size=32,
         shuffle=True,
@@ -288,12 +298,8 @@ def _train_fold_kg_gat_and_stacker(
             optimizer.step()
 
         val_p = _infer(x_val, adj_val)
-        ics = [
-            float(np.corrcoef(val_p[i], y_val[i])[0, 1])
-            for i in range(len(val_p))
-            if np.std(val_p[i]) > 1e-8 and np.std(y_val[i]) > 1e-8
-        ]
-        mean_ic = float(np.nanmean(ics)) if ics else -1.0
+        ics = [float(np.corrcoef(p, y)[0, 1]) for p, y in iter_observed_cross_sections(val_p, y_val)]
+        mean_ic = float(np.mean(ics)) if ics else -1.0
         if mean_ic > best_val_ic:
             best_val_ic = mean_ic
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
@@ -328,11 +334,9 @@ def _train_fold_kg_gat_and_stacker(
     )
     val_ens_p = val_blended["test_preds"]
     ens_val_ics = [
-        float(np.corrcoef(val_ens_p[i], y_val[i])[0, 1])
-        for i in range(len(y_val))
-        if np.std(val_ens_p[i]) > 1e-8 and np.std(y_val[i]) > 1e-8
+        float(np.corrcoef(p, y)[0, 1]) for p, y in iter_observed_cross_sections(val_ens_p, y_val)
     ]
-    mean_ens_val_ic = float(np.nanmean(ens_val_ics)) if ens_val_ics else 0.0
+    mean_ens_val_ic = float(np.mean(ens_val_ics)) if ens_val_ics else 0.0
     # 融合 A 股截面中期动量-资金流锚 (sharpe_20d + cmf_20d - ma_bias_20)
     oos_anchor = (
         0.45 * x_oos[:, :, -1, 5]
@@ -705,6 +709,22 @@ def _rl_training_return_legs(
     return overnight_rets, intraday_rets
 
 
+def _opening_execution_masks(
+    bars: pd.DataFrame, next_sessions: pd.DatetimeIndex, symbols: Sequence[str], cost: Costs,
+) -> dict[str, np.ndarray]:
+    """Classify orders at the execution open, independently of signal construction."""
+    days = {day: i for i, day in enumerate(next_sessions)}
+    assets = {symbol: i for i, symbol in enumerate(symbols)}
+    dates = pd.to_datetime(bars["date"]).dt.normalize()
+    rows = bars.assign(date=dates).loc[dates.isin(next_sessions) & bars["symbol"].isin(symbols)]
+    masks = {f"{side}_allowed": np.zeros((len(days), len(assets)), dtype=bool) for side in ("buy", "sell")}
+    for row in rows.itertuples(index=False):
+        for side in ("buy", "sell"):
+            price, _ = opening_execution_price(row, side, cost)
+            masks[f"{side}_allowed"][days[row.date], assets[row.symbol]] = price is not None
+    return masks
+
+
 def run_walk_forward_ablation_experiment(
     bars_df: pd.DataFrame,
     calendar_dates: Sequence[pd.Timestamp],
@@ -720,6 +740,7 @@ def run_walk_forward_ablation_experiment(
     oos_step_sessions: int = 160,
     epochs_per_fold: int = 8,
     ppo_seeds: Sequence[int] = PPO_SEEDS,
+    rl_respect_opening_limits: bool = False,
 ) -> Dict[str, Any]:
     """执行端到端 Walk-Forward 样本外训练 + 真实份额账本同口径消融 (含 5-Seed PPO 与 Prior-Only 对照)."""
     panel = build_open_to_open_panel(
@@ -755,8 +776,13 @@ def run_walk_forward_ablation_experiment(
     if len(rl_train_idx) < 5:
         raise ValueError("Insufficient contiguous RL training samples with labels ending before evaluation")
     train_positions = full_cal.get_indexer([oos_stream.dates[i] for i in rl_train_idx])
+    training_execution_dates = full_cal[train_positions + 1]
     overnight_rets, intraday_rets = _rl_training_return_legs(
-        bars_df, actions_df, panel.close_returns, full_cal[train_positions + 1]
+        bars_df, actions_df, panel.close_returns, training_execution_dates
+    )
+    opening_masks = (
+        _opening_execution_masks(bars_df, training_execution_dates, oos_stream.symbols, Costs())
+        if rl_respect_opening_limits else {}
     )
     eval_idx = np.arange(rl_split, n_oos)
 
@@ -770,18 +796,15 @@ def run_walk_forward_ablation_experiment(
     eval_target_z = oos_stream.y_alpha_z[eval_idx]
 
     daily_ics, daily_rics = [], []
-    for t in range(len(eval_idx)):
-        p, y = eval_alpha[t], eval_target_z[t]
-        if np.std(p) > 1e-8 and np.std(y) > 1e-8:
-            ic_v = float(np.corrcoef(p, y)[0, 1])
-            ric_v, _ = spearmanr(p, y)
-            if np.isfinite(ic_v):
-                daily_ics.append(ic_v)
-            if np.isfinite(ric_v):
-                daily_rics.append(float(ric_v))
-    ic_mean = float(np.mean(daily_ics)) if daily_ics else 0.0
-    rank_ic_mean = float(np.mean(daily_rics)) if daily_rics else 0.0
-    icir = float(ic_mean / (np.std(daily_ics) + 1e-8) * np.sqrt(252.0 / horizon)) if daily_ics else 0.0
+    for p, y in iter_observed_cross_sections(eval_alpha, eval_target_z):
+        daily_ics.append(float(np.corrcoef(p, y)[0, 1]))
+        daily_rics.append(float(spearmanr(p, y).statistic))
+    ic_mean = float(np.mean(daily_ics)) if daily_ics else None
+    rank_ic_mean = float(np.mean(daily_rics)) if daily_rics else None
+    ic_std = float(np.std(daily_ics)) if daily_ics else 0.0
+    icir = (ic_mean / (ic_std + 1e-8) * np.sqrt(252.0 / horizon)
+            if ic_mean is not None and len(daily_ics) >= 2 and ic_std > 1e-8 else None)
+    observed_eval_labels = int(np.isfinite(eval_target_z).sum())
 
     # 准备评估窗口的完整交易日历 (含最后一个信号执行所需顺延交易日)
     eval_cal = full_cal[(full_cal >= eval_dates[0]) & (full_cal <= eval_dates[-1])]
@@ -797,6 +820,7 @@ def run_walk_forward_ablation_experiment(
             real_next_rets=intraday_rets,
             overnight_rets=overnight_rets,
             rebalance_interval=horizon,
+            **opening_masks,
         )
 
     _set_seed(42)
@@ -961,7 +985,13 @@ def run_walk_forward_ablation_experiment(
             "initial_cash": initial_cash,
             "execution_timing": "signal_at_t_close -> execute_at_t_plus_1_open",
             "label_definition": "open(t+1) to open(t+h+1) holder return with dividends and splits",
+            "missing_label_policy": "exclude unknown outcomes from target normalization, training, calibration and scoring",
             "risk_inputs": "corporate-action-adjusted close returns observed through signal close",
+            "kg_relation_prior": (
+                "training-only implicit prior with explicit relations resolved at each signal close"
+                if has_versioned_relation_columns(base_edges_df)
+                else "training implicit prior plus legacy static edges"
+            ),
             "stock_target_limits": {
                 "max_share_of_nav": MAX_STOCK_NAV_WEIGHT,
                 "max_share_of_invested_value": MAX_STOCK_HOLDINGS_SHARE,
@@ -970,6 +1000,13 @@ def run_walk_forward_ablation_experiment(
             },
             "evaluation_policy_state": "actual share-ledger holdings, cash and drawdown at signal close",
             "rl_training_transition": "fractional next-session approximation: old holdings close-to-open, target holdings open-to-close; simplified costs",
+            "rl_opening_execution": {
+                "mode": "ledger_opening_checks" if rl_respect_opening_limits else "unconstrained_fractional",
+                "training_execution_dates": [str(training_execution_dates[0].date()), str(training_execution_dates[-1].date())],
+                "disallowed_asset_opens": {
+                    side: int((~mask).sum()) for side, mask in opening_masks.items()
+                },
+            },
             "rl_rebalance_interval_sessions": horizon,
             "purge_gap_enforced": True,
             "walk_forward_folds": oos_stream.fold_boundaries,
@@ -981,6 +1018,10 @@ def run_walk_forward_ablation_experiment(
             "ic_mean": ic_mean,
             "rank_ic_mean": rank_ic_mean,
             "icir": icir,
+            "observed_labels": observed_eval_labels,
+            "missing_labels": int(eval_target_z.size) - observed_eval_labels,
+            "correlation_sessions": len(daily_ics),
+            "evaluation_signal_sessions": len(eval_dates),
         },
         "share_ledger_ablation": ledger_reports,
         "block_bootstrap_vs_equal_weight": bootstrap_summary,
@@ -999,6 +1040,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--horizon", type=int, default=5, choices=(5, 20))
     parser.add_argument("--top-k", type=int, default=0, help="Top-K active holdings (0 = auto: 2 for <=6 assets, 5 for >6)")
     parser.add_argument("--capital", type=float, default=100_000.0)
+    parser.add_argument("--rl-respect-opening-limits", action="store_true",
+                        help="Apply the share ledger's opening checks to RL training trades")
     parser.add_argument("--out", type=Path, required=True, help="New output directory for report and artifacts")
     args = parser.parse_args(argv)
 
@@ -1022,8 +1065,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     n_unique_assets = bars_df["symbol"].nunique()
     top_k = args.top_k if args.top_k > 0 else (2 if n_unique_assets <= 6 else 5)
 
-    # 优先读取快照自带的双时点知识图谱边与事件表；否则回退至核心宽基-红利传导边
-    if "edges" in frames and not frames["edges"].empty:
+    # 仅在快照未提供关系表时使用手工先验。时点过滤后为空的表代表没有可用关系。
+    if "edges" in frames:
         base_edges = frames["edges"].copy()
     else:
         base_edges = pd.DataFrame(
@@ -1052,6 +1095,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         val_sessions=230,
         oos_step_sessions=230,
         epochs_per_fold=10,
+        rl_respect_opening_limits=args.rl_respect_opening_limits,
     )
     report["snapshot_manifest_coverage"] = manifest.get("coverage", {})
     out_file = args.out / "walk_forward_ablation_report.json"

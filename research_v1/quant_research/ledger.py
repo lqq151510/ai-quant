@@ -262,7 +262,8 @@ def _prepare_actions(actions: pd.DataFrame | None, days: list[date]) -> list[_Ac
     return result
 
 
-def _open_price(row: object | None, side: str, cost: Costs) -> tuple[float | None, str]:
+def opening_execution_price(row: object | None, side: str, cost: Costs) -> tuple[float | None, str]:
+    """Apply the ledger's directional opening checks and modeled slippage."""
     if row is None:
         return None, "missing_bar"
     if not row.tradable or row.volume == 0:
@@ -356,7 +357,7 @@ def _rebalance(
         row = rows.get(symbol)
         position = positions.setdefault(symbol, _Position())
         side = "buy" if buying else "sell"
-        price, reason = _open_price(row, side, cost)
+        price, reason = opening_execution_price(row, side, cost)
         quantity = 0
         notional, charges, cash_delta = 0.0, (0.0, 0.0, 0.0), 0.0
         if price is not None:

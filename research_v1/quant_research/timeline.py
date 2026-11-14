@@ -108,6 +108,7 @@ def open_labels(bars: pd.DataFrame, calendar: Iterable[object], horizon: int, ac
         aligned = asset.set_index("date").reindex(days)
         px = pd.to_numeric(aligned["open"]).to_numpy(float)
         tradable = aligned["tradable"].eq(True).to_numpy(bool)
+        priced = tradable & np.isfinite(px) & (px > 0)
         values = np.full(len(days), np.nan)
         events = []
         if not actions.empty:
@@ -121,7 +122,7 @@ def open_labels(bars: pd.DataFrame, calendar: Iterable[object], horizon: int, ac
                     events.append((j, pd.Timestamp(record_date).normalize(), row.cash_per_share, row.share_multiplier))
         for i in range(len(days) - horizon - 1):
             start, stop = i + 1, i + horizon + 1
-            if not (tradable[start] and tradable[stop] and px[start] > 0 and px[stop] > 0):
+            if not (priced[start] and priced[stop]):
                 continue
             shares, cash = 1.0, 0.0
             for j, record, dividend, multiplier in sorted(events):

@@ -1,10 +1,24 @@
 """领域层新增算法 4：梯度提升树 (Hist-GBDT) 与时空图网络 (KG-GAT) 正交 Stacking 集成器."""
 
+from collections.abc import Iterator
 from typing import Dict, Tuple
 import numpy as np
 from sklearn.ensemble import HistGradientBoostingRegressor
 
 from src.domain.timeseries_dl.losses import build_exponential_time_decay_weights
+
+
+def iter_observed_cross_sections(
+    predictions: np.ndarray, targets: np.ndarray,
+) -> Iterator[tuple[np.ndarray, np.ndarray]]:
+    """Yield comparable cross sections using only finite prediction/target pairs."""
+    if predictions.ndim != 2 or predictions.shape != targets.shape:
+        raise ValueError("cross-sectional predictions and targets must share a (days, assets) shape")
+    for daily_pred, daily_target in zip(predictions, targets, strict=True):
+        observed = np.isfinite(daily_pred) & np.isfinite(daily_target)
+        pred, target = daily_pred[observed], daily_target[observed]
+        if len(target) >= 2 and pred.std() > 1e-8 and target.std() > 1e-8:
+            yield pred, target
 
 
 class OrthogonalTreeGNNStacker:
@@ -58,13 +72,18 @@ class OrthogonalTreeGNNStacker:
         t_tr, n_assets = train_y.shape
         t_va = val_y.shape[0]
         t_te = test_x.shape[0]
+        y_tr_flat = train_y.reshape(-1)
+        observed = np.isfinite(y_tr_flat)
+        if not observed.any():
+            raise ValueError("GBDT training requires at least one observed target")
 
         x_tr_raw = self.extract_tabular_features(train_x)
         x_va_raw = self.extract_tabular_features(val_x)
         x_te_raw = self.extract_tabular_features(test_x)
 
-        # 算法升级 A：在训练集大样本面板 (N_samples = T_tr * N) 上拟合时不变 Löwdin 对称正交化算子 S^{-1/2}
-        cov_tr = (x_tr_raw.T @ x_tr_raw) / max(len(x_tr_raw), 1)
+        # Fit the Löwdin transform on the same observed training rows as the tree.
+        x_tr_observed = x_tr_raw[observed]
+        cov_tr = (x_tr_observed.T @ x_tr_observed) / len(x_tr_observed)
         shrunk_cov = 0.70 * cov_tr + 0.30 * np.eye(x_tr_raw.shape[1], dtype=np.float64)
         eigvals, eigvecs = np.linalg.eigh(shrunk_cov)
         lowdin_mat = (eigvecs @ np.diag(1.0 / np.sqrt(np.maximum(eigvals, 1e-4))) @ eigvecs.T).astype(np.float32)
@@ -73,11 +92,10 @@ class OrthogonalTreeGNNStacker:
         x_va_tab = 0.75 * x_va_raw + 0.25 * (x_va_raw @ lowdin_mat)
         x_te_tab = 0.75 * x_te_raw + 0.25 * (x_te_raw @ lowdin_mat)
 
-        y_tr_flat = train_y.reshape(-1)
-        # 算法升级 C：概念漂移指数时间衰减样本加权 (半衰期 220 日)
+        # Keep time decay tied to the original training dates before dropping labels.
         day_w = build_exponential_time_decay_weights(t_tr, half_life=220.0)
         sample_w_flat = np.repeat(day_w, n_assets)
-        self.gbdt.fit(x_tr_tab, y_tr_flat, sample_weight=sample_w_flat)
+        self.gbdt.fit(x_tr_tab[observed], y_tr_flat[observed], sample_weight=sample_w_flat[observed])
 
         tree_tr = self._row_zscore(self.gbdt.predict(x_tr_tab).reshape(t_tr, n_assets))
         tree_va = self._row_zscore(self.gbdt.predict(x_va_tab).reshape(t_va, n_assets))
@@ -88,11 +106,11 @@ class OrthogonalTreeGNNStacker:
 
         # 根据验证集 IC 自适应确定 GBDT 辅助权重 (限制在 [0.12, 0.30] 之间以保持时空图网络主干)
         va_ic_list = [
-            np.corrcoef(tree_va[t], val_y[t])[0, 1]
-            for t in range(t_va)
-            if np.std(tree_va[t]) > 1e-6
+            np.corrcoef(pred, target)[0, 1]
+            for pred, target in iter_observed_cross_sections(tree_va, val_y)
+            if pred.std() > 1e-6
         ]
-        mean_va_ic = float(np.nanmean(va_ic_list)) if va_ic_list else 0.0
+        mean_va_ic = float(np.mean(va_ic_list)) if va_ic_list else 0.0
         self.tree_weight = float(np.clip(0.18 + 1.5 * max(0.0, mean_va_ic), 0.15, 0.30))
 
         w = self.tree_weight

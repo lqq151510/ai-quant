@@ -31,6 +31,20 @@ def test_actions_in_open_labels_no_double_count_or_future_fill():
     assert labels.tail(6)["target_return"].isna().all()
 
 
+@pytest.mark.parametrize(("offset", "opening_price", "tradable"), [
+    (1, np.inf, True), (6, np.inf, True), (1, 10.0, False), (6, np.nan, True),
+])
+def test_open_labels_leave_unpriced_or_untradable_boundaries_unknown(offset, opening_price, tradable):
+    dates = pd.bdate_range("2024-01-02", periods=10)
+    bars = pd.DataFrame({"date": dates, "symbol": "510300", "open": 10.0, "tradable": True})
+    bars.loc[offset, ["open", "tradable"]] = [opening_price, tradable]
+
+    labels = open_labels(bars, dates, 5, pd.DataFrame())
+
+    assert np.isnan(labels.loc[0, "target_return"])
+    assert labels.loc[1, "target_return"] == 0.0
+
+
 def test_labels_and_features_reject_conflicting_corporate_actions():
     from quant_research.baseline import market_close_returns
 

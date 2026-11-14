@@ -29,6 +29,8 @@ class ASharePortfolioEnv(gym.Env):
         *,
         overnight_rets: np.ndarray | None = None,
         rebalance_interval: int = 3,
+        buy_allowed: np.ndarray | None = None,
+        sell_allowed: np.ndarray | None = None,
     ) -> None:
         super().__init__()
         if isinstance(rebalance_interval, bool) or not isinstance(rebalance_interval, int) or rebalance_interval < 1:
@@ -41,6 +43,18 @@ class ASharePortfolioEnv(gym.Env):
             for leg in (overnight_rets, real_next_rets):
                 if leg.shape != alpha_preds.shape or not np.all(np.isfinite(leg) & (leg > -1.0)):
                     raise ValueError("overnight and intraday returns must match alpha shape and be finite and greater than -1")
+        if (buy_allowed is None) != (sell_allowed is None):
+            raise ValueError("buy_allowed and sell_allowed must be supplied together")
+        if buy_allowed is not None and sell_allowed is not None:
+            if overnight_rets is None:
+                raise ValueError("opening execution masks require overnight_rets")
+            for mask in (buy_allowed, sell_allowed):
+                if mask.shape != alpha_preds.shape or mask.dtype != np.bool_:
+                    raise ValueError("opening execution masks must be boolean and match alpha shape")
+            if not np.isfinite(buy_cost) or buy_cost < 0 or not 0 <= sell_cost < 1:
+                raise ValueError("opening execution requires nonnegative costs and sell_cost below one")
+        self.buy_allowed = None if buy_allowed is None else buy_allowed.copy()
+        self.sell_allowed = None if sell_allowed is None else sell_allowed.copy()
         self.overnight_rets = None if overnight_rets is None else overnight_rets.astype(np.float64)
         # 对齐 3 日预测周期做 EMA 信号平滑，消除单日高频噪音导致的无效换手
         smoothed = np.zeros_like(alpha_preds, dtype=np.float32)
@@ -67,7 +81,7 @@ class ASharePortfolioEnv(gym.Env):
         )
 
         self.step_idx = 0
-        self.weights = np.zeros(self.n_assets, dtype=np.float32)
+        self.weights = np.zeros(self.n_assets, dtype=np.float64 if self.buy_allowed is not None else np.float32)
         self.cash_weight = 1.0
         self.nav = 1.0
         self.peak_nav = 1.0
@@ -78,18 +92,44 @@ class ASharePortfolioEnv(gym.Env):
         return np.concatenate([
             self.alpha_preds[idx],
             self.vol_features[idx],
-            self.weights,
+            self.weights.astype(np.float32, copy=False),
             np.array([self.cash_weight, current_dd], dtype=np.float32),
         ])
 
     def reset(self, *, seed: int | None = None, options: dict | None = None) -> Tuple[np.ndarray, Dict]:
         super().reset(seed=seed)
         self.step_idx = 0
-        self.weights = np.zeros(self.n_assets, dtype=np.float32)
+        self.weights = np.zeros(self.n_assets, dtype=np.float64 if self.buy_allowed is not None else np.float32)
         self.cash_weight = 1.0
         self.nav = 1.0
         self.peak_nav = 1.0
         return self._get_obs(), {}
+
+    def _execute_opening(
+        self, opening_w: np.ndarray, opening_cash: float, target_w: np.ndarray,
+        buy_allowed: np.ndarray, sell_allowed: np.ndarray,
+    ) -> tuple[np.ndarray, float, dict[str, float]]:
+        """Execute fractionally in units of opening NAV and debit fees from actual cash."""
+        delta = target_w - opening_w
+        desired_buys = np.maximum(delta, 0.0)
+        desired_sells = np.maximum(-delta, 0.0)
+        sells = np.where(sell_allowed, desired_sells, 0.0)
+        buys = np.where(buy_allowed, desired_buys, 0.0)
+        sell_turnover = float(sells.sum())
+        cash = opening_cash + sell_turnover * (1.0 - self.sell_cost)
+        eligible_buy_turnover = float(buys.sum())
+        buy_budget = cash / (1.0 + self.buy_cost)
+        if eligible_buy_turnover > buy_budget:
+            buys *= buy_budget / eligible_buy_turnover
+        buy_turnover = float(buys.sum())
+        cash = max(0.0, cash - buy_turnover * (1.0 + self.buy_cost))
+        return opening_w - sells + buys, cash, {
+            "buy_turnover": buy_turnover,
+            "sell_turnover": sell_turnover,
+            "blocked_buy_turnover": float(desired_buys[~buy_allowed].sum()),
+            "blocked_sell_turnover": float(desired_sells[~sell_allowed].sum()),
+            "cash_limited_buy_turnover": max(0.0, eligible_buy_turnover - buy_turnover),
+        }
 
     def step(self, action: np.ndarray) -> Tuple[np.ndarray, float, bool, bool, Dict]:
         # 将动作 logits 转换为合法的组合权重 (含现金维度)
@@ -143,10 +183,22 @@ class ASharePortfolioEnv(gym.Env):
                 target_w = opening_w
                 target_cash = self.cash_weight / opening_growth
 
-        delta_w = target_w - opening_w
-        buy_turnover = float(np.sum(np.maximum(delta_w, 0.0)))
-        sell_turnover = float(np.sum(np.maximum(-delta_w, 0.0)))
-        tx_cost = buy_turnover * self.buy_cost + sell_turnover * self.sell_cost
+        execution_info = {}
+        gated = self.buy_allowed is not None and self.sell_allowed is not None
+        if gated:
+            target_w, target_cash, execution_info = self._execute_opening(
+                opening_w, self.cash_weight / opening_growth, target_w,
+                self.buy_allowed[self.step_idx], self.sell_allowed[self.step_idx],
+            )
+            buy_turnover = execution_info["buy_turnover"]
+            sell_turnover = execution_info["sell_turnover"]
+            # The cash balance already includes the fees for the trades that filled.
+            tx_cost = 0.0
+        else:
+            delta_w = target_w - opening_w
+            buy_turnover = float(np.sum(np.maximum(delta_w, 0.0)))
+            sell_turnover = float(np.sum(np.maximum(-delta_w, 0.0)))
+            tx_cost = buy_turnover * self.buy_cost + sell_turnover * self.sell_cost
 
         post_values = target_w * (1.0 + asset_rets)
         total_val = float(np.sum(post_values)) + target_cash
@@ -155,15 +207,15 @@ class ASharePortfolioEnv(gym.Env):
             net_ret = float(np.dot(target_w, asset_rets)) - tx_cost
             bench_ret = float(np.mean(asset_rets))
         else:
-            # 摩擦按开盘权益计提，剩余资金按目标权重分配后承担日内收益。
             net_ret = opening_growth * (1.0 - tx_cost) * total_val - 1.0
             bench_ret = float(np.mean((1.0 + overnight) * (1.0 + asset_rets) - 1.0))
 
-        self.nav *= (1.0 + net_ret)
+        self.nav *= opening_growth * total_val if gated else (1.0 + net_ret)
         self.peak_nav = max(self.peak_nav, self.nav)
         drawdown = (self.peak_nav - self.nav) / self.peak_nav
-        self.weights = (post_values / max(total_val, 1e-8)).astype(np.float32)
-        self.cash_weight = float(target_cash / max(total_val, 1e-8))
+        close_value = total_val if gated else max(total_val, 1e-8)
+        self.weights = (post_values / close_value).astype(self.weights.dtype)
+        self.cash_weight = float(target_cash / close_value)
 
         # 奖励塑形: 净超额收益 - 强化换手惩罚 - 超阈值回撤二次方惩罚
         excess_ret = net_ret - 0.7 * bench_ret
@@ -183,5 +235,6 @@ class ASharePortfolioEnv(gym.Env):
             "cash_weight": self.cash_weight,
             "nav": self.nav,
             "drawdown": drawdown,
+            **execution_info,
         }
         return self._get_obs(), reward, terminated, False, info

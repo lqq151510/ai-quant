@@ -39,12 +39,16 @@ def momentum_weights(scores: pd.Series, volatility: pd.Series, kind: str) -> dic
 
 
 def build_targets(
-    days: pd.DatetimeIndex, cohort: Mapping, returns: pd.DataFrame, kind: str, horizon: int
+    days: pd.DatetimeIndex, cohort: Mapping, returns: pd.DataFrame, kind: str, horizon: int,
+    *, reverse_momentum: bool = False, calendar_monthly: bool = False,
 ) -> dict[str, dict]:
     momentum = np.expm1(np.log1p(returns.where(returns > -1)).rolling(20, min_periods=20).sum())
+    if reverse_momentum:
+        momentum = -momentum
     volatility = returns.rolling(20, min_periods=20).std()
     eq, mom = {}, {}
-    for day in days[::horizon]:
+    review_dates = days[~days.to_period("M").duplicated()] if calendar_monthly else days[::horizon]
+    for day in review_dates:
         names = list(cohort.get(day, ()))
         eq[day] = {s: 1 / len(names) for s in names} if names else {}
         mom[day] = momentum_weights(momentum.loc[day].reindex(names), volatility.loc[day], kind)

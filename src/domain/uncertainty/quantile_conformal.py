@@ -85,18 +85,24 @@ def fit_and_calibrate_conformal_quantile(
 ) -> UncertaintyPrediction:
     """训练分位数回归模型并在验证集上执行 Split Conformal Prediction 校准 (Roman et al., CQR).
 
-    严格无数据泄漏：
-    1. 模型参数仅在 train_x, train_y 上训练；
-    2. 共形校准分位数 q_hat 仅在 val_x, val_y 上计算；
-    3. 最终对 eval_x 生成带覆盖保证的上下界与不确定性宽度。
+    模型拟合与区间校准只使用各自分区中有真实标签的标的。
+    最终对 eval_x 中每个标的生成上下界与不确定性宽度。
     """
+    train_observed = np.isfinite(train_y)
+    val_observed = np.isfinite(val_y)
+    if not train_observed.any():
+        raise ValueError("CQR requires observed training labels")
+    if not val_observed.any():
+        raise ValueError("CQR requires observed validation labels")
+
     _, _, seq_len, n_feats = train_x.shape
     model = QuantileUncertaintyModel(in_features=n_feats, seq_len=seq_len).to(device)
     criterion = PinballQuantileLoss().to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=1.5e-3, weight_decay=1e-4)
 
-    tx = torch.tensor(train_x, dtype=torch.float32, device=device)
-    ty = torch.tensor(train_y, dtype=torch.float32, device=device)
+    # Each asset is encoded independently, so keep only observed asset sequences for fitting.
+    tx = torch.tensor(train_x[train_observed][:, None], dtype=torch.float32, device=device)
+    ty = torch.tensor(train_y[train_observed][:, None], dtype=torch.float32, device=device)
 
     model.train()
     for _ in range(epochs):
@@ -108,11 +114,13 @@ def fit_and_calibrate_conformal_quantile(
 
     model.eval()
     with torch.no_grad():
-        val_out = model(torch.tensor(val_x, dtype=torch.float32, device=device)).cpu().numpy()
+        val_out = model(torch.tensor(val_x[val_observed][:, None], dtype=torch.float32, device=device))
+        val_out = val_out[:, 0].cpu().numpy()
         eval_out = model(torch.tensor(eval_x, dtype=torch.float32, device=device)).cpu().numpy()
 
     # Conformalized Quantile Regression (CQR) 非一致性得分: E = max(q10 - y, y - q90)
-    val_scores = np.maximum(val_out[..., 0] - val_y, val_y - val_out[..., 2]).flatten()
+    observed_val_y = val_y[val_observed]
+    val_scores = np.maximum(val_out[:, 0] - observed_val_y, observed_val_y - val_out[:, 2])
     n_cal = len(val_scores)
     q_level = np.clip(np.ceil((n_cal + 1) * (1.0 - alpha_miscoverage)) / n_cal, 0.5, 0.95)
     q_hat = float(np.quantile(val_scores, q_level))

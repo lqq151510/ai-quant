@@ -108,8 +108,12 @@ def _read_bounded(files: Mapping[str, Path], records: Mapping[str, dict], end: d
                 if date_column:
                     clauses.append(f"TRY_CAST({date_column} AS DATE) <= ?")
                     params.append(end)
-                timestamp_columns = {"news": ("ready_at",), "membership": ("known_at",),
-                                     "edges": tuple(c for c in ("known_at", "valid_from") if c in columns)}
+                # A known revision can supersede an older edge before its own validity starts.
+                timestamp_columns = {
+                    "news": ("ready_at",),
+                    "membership": ("known_at",),
+                    "edges": ("known_at",) if "known_at" in columns else tuple({"valid_from"} & columns),
+                }
                 for column in timestamp_columns.get(name, ()):
                     clauses.append(f"TRY_CAST({column} AS TIMESTAMPTZ) < ?")
                     params.append(cutoff)

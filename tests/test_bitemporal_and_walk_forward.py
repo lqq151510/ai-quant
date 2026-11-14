@@ -82,6 +82,81 @@ class BitemporalAndWalkForwardTests(unittest.TestCase):
         g_oct = build_asof_directed_graph(rels, "2024-10-01T07:00:00+00:00")
         self.assertFalse(g_oct.has_edge("510050", "510300"))
 
+    def test_snapshot_relation_versions_and_news_reach_only_eligible_sessions(self) -> None:
+        edges = pd.DataFrame([
+            {"relation_id": "chain", "src_symbol": "510050", "dst_symbol": "510300",
+             "relation_type": "supply", "valid_from": "2024-06-01T00:00:00+08:00", "valid_to": None,
+             "known_at": "2024-06-04T14:00:00+08:00", "weight": 0.60, "confidence": 0.50,
+             "withdrawn": False},
+            {"relation_id": "chain", "src_symbol": "510050", "dst_symbol": "510300",
+             "relation_type": "supply", "valid_from": "2024-06-07", "valid_to": None,
+             "known_at": "2024-06-06T14:00:00+08:00", "weight": 0.90, "confidence": 0.75,
+             "withdrawn": False},
+            {"relation_id": "chain", "src_symbol": "510050", "dst_symbol": "510300",
+             "relation_type": "supply", "valid_from": "2024-06-07", "valid_to": None,
+             "known_at": "2024-06-10T14:00:00+08:00", "weight": 0.90, "confidence": 0.75,
+             "withdrawn": True},
+            {"relation_id": "expires", "src_symbol": "510300", "dst_symbol": "510050",
+             "relation_type": "supply", "valid_from": "2024-06-05", "valid_to": "2024-06-06",
+             "known_at": "2024-06-04T14:00:00+08:00", "weight": 0.20, "confidence": 0.75,
+             "withdrawn": False},
+        ])
+        news = pd.DataFrame([{
+            "symbol": "510050", "published_at": "2024-06-03T14:20:00+08:00",
+            "observed_at": "2024-06-03T14:30:00+08:00", "ready_at": "2024-06-03T15:30:00+08:00",
+            "sentiment": 0.5,
+        }])
+        bundle = build_bitemporal_bundle_from_news_and_edges(edges, news)
+        self.assertEqual(len(bundle.relations), len(edges))
+        self.assertEqual(bundle.relations[0].relation_type, "supply")
+
+        days = ["2024-06-03", "2024-06-04", "2024-06-05", "2024-06-06", "2024-06-07", "2024-06-10"]
+        adjacency, features = compute_bitemporal_3hop_features_and_adjacency(days, ["510050", "510300"], bundle)
+        np.testing.assert_allclose(adjacency[:, 1, 0], [0, 0.6, 0.6, 0, 0.9, 0])
+        np.testing.assert_allclose(adjacency[:, 0, 1], [0, 0, 0.2, 0, 0, 0])
+        np.testing.assert_array_equal(features[0], 0)
+        self.assertAlmostEqual(float(features[1, 1, 1]), 0.30)
+        self.assertAlmostEqual(float(features[1, 1, 3]), 0.40)
+
+        invalid_news = news.assign(ready_at="2024-06-03T14:25:00+08:00")
+        with self.assertRaisesRegex(ValueError, "published_at <= observed_at <= ready_at"):
+            build_bitemporal_bundle_from_news_and_edges(edges, invalid_news)
+
+    def test_snapshot_relation_input_rejects_incomplete_and_invalid_versions(self) -> None:
+        edges = pd.DataFrame([{
+            "relation_id": "chain", "src_symbol": "510050", "dst_symbol": "510300",
+            "valid_from": "2024-06-01", "known_at": "2024-06-03T15:00:00+08:00", "weight": 0.6,
+        }])
+        bad_inputs = (
+            (edges.drop(columns="relation_id"), "Missing versioned relation fields"),
+            (edges.assign(known_at=None), "missing evidence timestamp"),
+            (edges.assign(withdrawn="false"), "withdrawn must be a boolean"),
+            (edges.assign(valid_to="2024-06-01"), "validity interval must be positive"),
+            (edges.assign(confidence=2), "weight/confidence must be in"),
+            (pd.concat([edges, edges]), "duplicate relation version"),
+        )
+        for malformed, message in bad_inputs:
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                build_bitemporal_bundle_from_news_and_edges(malformed)
+
+    def test_legacy_unversioned_graph_preserves_static_prior_and_news_delay(self) -> None:
+        edges = pd.DataFrame([{"src_symbol": "510050", "dst_symbol": "510300", "weight": 0.6}])
+        news = pd.DataFrame([{
+            "symbol": "510050", "publish_time": "2024-06-03T14:00:00+08:00",
+            "observed_at": "2024-06-03T14:50:00+08:00", "sentiment": 0.5,
+        }])
+        bundle = build_bitemporal_bundle_from_news_and_edges(edges, news)
+        adjacency, features = compute_bitemporal_3hop_features_and_adjacency(
+            ["2024-06-03", "2024-06-04"], ["510050", "510300"], bundle,
+        )
+        np.testing.assert_allclose(adjacency[:, 1, 0], [0.6, 0.64])
+        self.assertEqual(float(features[0, 0, 0]), 0.0)
+        self.assertAlmostEqual(float(features[1, 0, 0]), np.log1p(1))
+
+        empty_bundle = build_bitemporal_bundle_from_news_and_edges(pd.DataFrame(), news)
+        self.assertEqual(empty_bundle.relations, ())
+        self.assertEqual(empty_bundle.events, bundle.events)
+
     def test_3hop_features_deduplicate_reposts_and_isolate_post_close_events(self) -> None:
         t_base = datetime(2024, 1, 1, 0, 0, tzinfo=timezone.utc)
         # 2跳图关系: 510050 -> 510300 -> 510500 (配合事件提及 510050 构成 3 跳传导)
@@ -155,6 +230,38 @@ class BitemporalAndWalkForwardTests(unittest.TestCase):
         # 2024-05-13 15:00 CST 同时可见 ev_1 与 ev_after (计 2 次 -> log1p(2))
         self.assertAlmostEqual(float(feats[1, 2, 0]), float(np.log1p(2)), places=5)
 
+    def test_walk_forward_prior_uses_versioned_edges_only_through_daily_adjacency(self) -> None:
+        symbols = ["510050", "510300"]
+        static_edges = pd.DataFrame([{
+            "src_symbol": symbols[0], "dst_symbol": symbols[1], "weight": 0.8,
+        }])
+        versioned_edges = static_edges.assign(
+            relation_id="chain", valid_from="2024-01-01T09:00:00+08:00",
+            known_at="2024-06-03T09:00:00+08:00",
+        )
+        x = np.zeros((2, 2, 20, 8), dtype=np.float32)
+        y = np.zeros((2, 2), dtype=np.float32)
+        days = ["2024-05-31", "2024-06-03"]
+
+        class PriorCaptured(Exception):
+            pass
+
+        for edges, expected_prior in ((static_edges, 0.52), (versioned_edges, 0.0)):
+            bundle = build_bitemporal_bundle_from_news_and_edges(edges)
+            daily, _ = compute_bitemporal_3hop_features_and_adjacency(days, symbols, bundle)
+            with (
+                patch.object(walk_forward_engine, "SpatioTemporalKGAlphaModel", side_effect=PriorCaptured) as model,
+                self.assertRaises(PriorCaptured),
+            ):
+                walk_forward_engine._train_fold_kg_gat_and_stacker(
+                    x[:1], y[:1], daily[:1], x[:1], y[:1], daily[:1],
+                    x[1:], daily[1:], symbols, edges,
+                )
+            prior = model.call_args.kwargs["adj_prior"].cpu().numpy()
+            np.testing.assert_allclose(prior, [[0.0, 0.0], [expected_prior, 0.0]], atol=1e-7)
+            if expected_prior == 0.0:
+                np.testing.assert_allclose(daily[:, 1, 0], [0.0, 0.8])
+
     def test_spatio_temporal_kg_model_supports_dynamic_adjacency_batches(self) -> None:
         adj_prior = torch.tensor([[0.0, 0.8, 0.0], [0.5, 0.0, 0.6], [0.0, 0.7, 0.0]], dtype=torch.float32)
         model = SpatioTemporalKGAlphaModel(adj_prior=adj_prior, in_features=15, seq_len=20, d_model=32, n_heads=4)
@@ -203,8 +310,21 @@ class BitemporalAndWalkForwardTests(unittest.TestCase):
         )
         bundle = build_bitemporal_bundle_from_news_and_edges(edges_df)
 
+        # Halt one instrument in the training, validation and final scoring periods.
+        halted = bars_df["date"].isin(dates[[54, 77, 116]]) & bars_df["symbol"].eq("510300")
+        bars_df.loc[halted, "tradable"] = False
+        # A fully unlabelled signal date can still have a valid feature panel.
+        bars_df.loc[bars_df["date"].eq(dates[60]), "tradable"] = False
+
         panel = build_open_to_open_panel(bars_df, dates, actions_df, bundle, horizon=5, seq_len=20)
         self.assertGreater(len(panel.dates), 60)
+        signal_idx = panel.dates.index(dates[53])
+        self.assertTrue(np.isnan(panel.y_open_ret_h[signal_idx, 1]))
+        self.assertTrue(np.isnan(panel.y_alpha_z[signal_idx, 1]))
+        np.testing.assert_allclose(np.sort(panel.y_alpha_z[signal_idx, [0, 2]]), [-1.0, 1.0])
+        all_missing_idx = panel.dates.index(dates[59])
+        self.assertTrue(np.isnan(panel.y_alpha_z[all_missing_idx]).all())
+        self.assertTrue(np.isfinite(panel.x_seq[[signal_idx, all_missing_idx]]).all())
 
         def run_and_capture(bars):
             policy_history = []
@@ -255,6 +375,13 @@ class BitemporalAndWalkForwardTests(unittest.TestCase):
 
         res, caps, history = run_and_capture(bars_df)
         self.assertEqual(len(history), 12)
+        quality = res["oos_alpha_quality"]
+        self.assertGreater(quality["missing_labels"], 0)
+        self.assertIsNotNone(quality["ic_mean"])
+        self.assertEqual(
+            quality["observed_labels"] + quality["missing_labels"],
+            len(symbols) * quality["evaluation_signal_sessions"],
+        )
         cutoff = sorted(history[0])[5]
         perturbed = bars_df.copy()
         future = perturbed["date"].gt(cutoff) & perturbed["symbol"].eq("510500")
@@ -333,6 +460,20 @@ class BitemporalAndWalkForwardTests(unittest.TestCase):
         out_w, should_trade = apply_turnover_deadband(prop_w, old_w, l1_deadband=0.16)
         self.assertFalse(should_trade)
         np.testing.assert_allclose(out_w, old_w)
+
+    def test_rl_opening_masks_align_dates_assets_and_trade_direction(self) -> None:
+        days = pd.to_datetime(["2024-06-03", "2024-06-04"])
+        bars = pd.DataFrame([
+            (days[0], "510050", 11.0, 9.0, 11.0, 1000, True),
+            (days[0], "510300", 10.0, 9.0, 11.0, 1000, False),
+            (days[1], "510300", 9.0, 9.0, 11.0, 1000, True),
+        ], columns=["date", "symbol", "open", "lower_limit", "upper_limit", "volume", "tradable"])
+        from quant_research.ledger import Costs
+
+        masks = walk_forward_engine._opening_execution_masks(bars, days, ["510300", "510050"], Costs())
+
+        np.testing.assert_array_equal(masks["buy_allowed"], [[False, False], [True, False]])
+        np.testing.assert_array_equal(masks["sell_allowed"], [[False, True], [False, False]])
 
     def test_wide28_supply_chain_graph_and_cohort_integrity(self) -> None:
         self.assertEqual(len(WIDE_CSI300_2015_COHORT), 24)

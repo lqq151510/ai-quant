@@ -52,6 +52,21 @@ def test_bounded_read_filters_before_materialization_and_checks_full_counts(tmp_
         read_snapshot(path, end=date(2024, 12, 31))
 
 
+def test_bounded_edges_keep_known_revisions_even_when_effective_after_end(tmp_path):
+    path = tmp_path / "snapshot"
+    edges = pd.DataFrame({
+        "relation_id": ["chain"] * 3,
+        "known_at": ["2024-01-02T09:00:00+08:00", "2024-12-30T09:00:00+08:00", "2025-01-03T09:00:00+08:00"],
+        "valid_from": ["2024-01-02T09:00:00+08:00", "2025-01-10T09:00:00+08:00", "2024-12-31T09:00:00+08:00"],
+        "weight": [0.4, 0.8, 0.9],
+    })
+    write_snapshot(path, origin="synthetic_fixture", frames={"edges": edges}, sources=[])
+
+    _, frames = read_snapshot(path, end=date(2024, 12, 31))
+
+    pd.testing.assert_frame_equal(frames["edges"], edges.iloc[:2])
+
+
 def test_fixture_and_unverified_market_are_not_market_evidence(tmp_path):
     path = tmp_path / "snapshot"
     manifest = write_snapshot(path, origin="synthetic_fixture", frames=fixture(), sources=[])

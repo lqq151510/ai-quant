@@ -42,21 +42,38 @@ class CrossSectionalICLoss(nn.Module):
 
         Args:
             pred: 预测截面分数, shape = (Batch_days, N_assets)
-            target: 真实截面标准化超额收益, shape = (Batch_days, N_assets)
+            target: 真实截面标准化超额收益, shape = (Batch_days, N_assets)，缺失值排除
             sample_weights: 可选时间衰减权重, shape = (Batch_days,)
         """
-        pred_centered = pred - pred.mean(dim=-1, keepdim=True)
-        target_centered = target - target.mean(dim=-1, keepdim=True)
+        observed = torch.isfinite(target)
+        count = observed.sum(dim=-1, keepdim=True)
+        count_safe = count.clamp_min(1)
+        pred_observed = torch.where(observed, pred, 0.0)
+        target_observed = torch.where(observed, target, 0.0)
 
+        pred_mean = pred_observed.sum(dim=-1, keepdim=True) / count_safe
+        target_mean = target_observed.sum(dim=-1, keepdim=True) / count_safe
+        pred_centered = torch.where(observed, pred_observed - pred_mean, 0.0)
+        target_centered = torch.where(observed, target_observed - target_mean, 0.0)
         cov = (pred_centered * target_centered).sum(dim=-1)
-        std_pred = torch.sqrt((pred_centered ** 2).sum(dim=-1) + self.eps)
-        std_target = torch.sqrt((target_centered ** 2).sum(dim=-1) + self.eps)
+        pred_ss = pred_centered.square().sum(dim=-1)
+        target_ss = target_centered.square().sum(dim=-1)
+        daily_ic = cov / (torch.sqrt(pred_ss + self.eps) * torch.sqrt(target_ss + self.eps) + self.eps)
+        daily_reg = self.mse(pred_observed, target_observed).sum(dim=-1) / count_safe.squeeze(-1)
 
-        daily_ic = cov / (std_pred * std_target + self.eps)
-        daily_reg = self.mse(pred, target).mean(dim=-1)
-        daily_total = (1.0 - daily_ic) + self.mse_weight * daily_reg
-
-        if sample_weights is not None:
-            w = sample_weights / (sample_weights.sum() + self.eps)
-            return (daily_total * w).sum()
-        return daily_total.mean()
+        has_observation = count.squeeze(-1) > 0
+        # Compare the observed ranges to detect constant sections even with roundoff in the mean.
+        pred_varies = pred.masked_fill(~observed, -torch.inf).amax(dim=-1) > pred.masked_fill(~observed, torch.inf).amin(dim=-1)
+        target_varies = (
+            target.masked_fill(~observed, -torch.inf).amax(dim=-1)
+            > target.masked_fill(~observed, torch.inf).amin(dim=-1)
+        )
+        has_ic = (count.squeeze(-1) > 1) & pred_varies & target_varies
+        weights = torch.ones_like(daily_reg) if sample_weights is None else sample_weights
+        ic_weights = weights * has_ic
+        reg_weights = weights * has_observation
+        ic_loss = (torch.where(has_ic, 1.0 - daily_ic, 0.0) * ic_weights).sum()
+        reg_loss = (daily_reg * reg_weights).sum()
+        if sample_weights is None:
+            return ic_loss / ic_weights.sum().clamp_min(1) + self.mse_weight * reg_loss / reg_weights.sum().clamp_min(1)
+        return ic_loss / (ic_weights.sum() + self.eps) + self.mse_weight * reg_loss / (reg_weights.sum() + self.eps)

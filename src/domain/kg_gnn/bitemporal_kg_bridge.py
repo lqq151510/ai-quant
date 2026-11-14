@@ -28,10 +28,18 @@ from src.domain.kg_gnn.dynamic_kg_rules import (
 from src.infrastructure.llm_client import DualModelLLMClient
 
 MAX_RELATION_HOPS = 2  # 事件提及实体为第1跳，加最多2跳图关系 = 3跳传导
+_VERSIONED_RELATION_COLUMNS = {"relation_id", "valid_from", "known_at", "valid_to", "withdrawn"}
+
+
+def has_versioned_relation_columns(edges: pd.DataFrame) -> bool:
+    """Recognize versioned input, including incomplete schemas that must be rejected."""
+    return bool(_VERSIONED_RELATION_COLUMNS.intersection(edges.columns))
 
 
 def _ensure_utc(dt: datetime | pd.Timestamp | str) -> datetime:
     ts = pd.Timestamp(dt)
+    if pd.isna(ts):
+        raise ValueError("missing evidence timestamp")
     if ts.tzinfo is None:
         ts = ts.tz_localize("Asia/Shanghai")
     return ts.tz_convert("UTC").to_pydatetime()
@@ -257,6 +265,53 @@ def compute_bitemporal_3hop_features_and_adjacency(
     return dynamic_adj, evidence_feats
 
 
+def _versioned_relations(edges: pd.DataFrame) -> List[BitemporalRelationVersion]:
+    required = {"relation_id", "src_symbol", "dst_symbol", "weight", "valid_from", "known_at"}
+    missing = required.difference(edges.columns)
+    if missing:
+        raise ValueError(f"Missing versioned relation fields: {', '.join(sorted(missing))}")
+
+    relations = []
+    seen = set()
+    for idx, row in edges.iterrows():
+        try:
+            identifiers = [row[key] for key in ("relation_id", "src_symbol", "dst_symbol")]
+            if any(pd.isna(value) or not str(value).strip() for value in identifiers):
+                raise ValueError("relation_id and endpoints cannot be empty")
+            relation_id, src, dst = (str(value).strip() for value in identifiers)
+            withdrawn = row.get("withdrawn", False)
+            if not isinstance(withdrawn, (bool, np.bool_)):
+                raise ValueError("withdrawn must be a boolean")
+            timestamps = {}
+            for field in ("valid_from", "known_at", "valid_to"):
+                value = row.get(field)
+                if field == "valid_to" and pd.isna(value):
+                    timestamps[field] = None
+                else:
+                    if isinstance(value, (int, float, np.number, bool)):
+                        raise ValueError(f"{field} must be a calendar timestamp")
+                    timestamps[field] = _ensure_utc(value)
+            version = (relation_id, timestamps["known_at"])
+            if version in seen:
+                raise ValueError(f"duplicate relation version for {relation_id}")
+            seen.add(version)
+            relations.append(
+                BitemporalRelationVersion(
+                    relation_id=relation_id,
+                    src_symbol=src,
+                    dst_symbol=dst,
+                    relation_type=str(row.get("relation_type", row.get("relation", "industry_chain"))),
+                    weight=float(row["weight"]),
+                    confidence=float(row.get("confidence", 0.85)),
+                    withdrawn=bool(withdrawn),
+                    **timestamps,
+                )
+            )
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError(f"Invalid versioned relation at row {idx}: {exc}") from exc
+    return relations
+
+
 def build_bitemporal_bundle_from_news_and_edges(
     base_edges_df: pd.DataFrame,
     news_df: Optional[pd.DataFrame] = None,
@@ -265,32 +320,34 @@ def build_bitemporal_bundle_from_news_and_edges(
     llm_client: Optional[DualModelLLMClient] = None,
     ingestion_delay_minutes: int = 15,
 ) -> BitemporalKGBundle:
-    """将静态基础产业链边与带时间戳的财经快讯转化为严格双时点的 BitemporalKGBundle.
+    """Load versioned snapshot edges or timeless legacy priors, plus dated news.
 
-    - 基础先验边被赋予 base_known_at (早于研究起点 2015-01-01)。
-    - 每条新闻根据其真实发布时间 published_time 生成 Event 与动态边修订版本 RelationVersion，
-      且 known_at = ready_at = observed_at + ingestion_delay，绝不影响 ready_at 之前的历史交易日截面！
+    Versioned edges change only when the supplied revisions become visible.
+    Legacy priors may receive heuristic news overlays at the event's ready time.
     """
-    base_dt = _ensure_utc(base_known_at)
-    relations: List[BitemporalRelationVersion] = []
+    versioned = has_versioned_relation_columns(base_edges_df)
     events: List[BitemporalEvent] = []
-
-    for idx, row in base_edges_df.iterrows():
-        u, v = str(row["src_symbol"]), str(row["dst_symbol"])
-        rel_type = str(row.get("relation", "industry_chain"))
-        w = float(np.clip(float(row["weight"]), 0.05, 1.0))
-        relations.append(
-            BitemporalRelationVersion(
-                relation_id=f"base_{u}_{v}_{idx}",
-                src_symbol=u,
-                dst_symbol=v,
-                relation_type=rel_type,
-                valid_from=base_dt,
-                known_at=base_dt,
-                weight=w,
-                confidence=0.85,
+    if versioned:
+        relations = _versioned_relations(base_edges_df)
+    else:
+        base_dt = _ensure_utc(base_known_at)
+        relations = []
+        for idx, row in base_edges_df.iterrows():
+            u, v = str(row["src_symbol"]), str(row["dst_symbol"])
+            rel_type = str(row.get("relation", "industry_chain"))
+            w = float(np.clip(float(row["weight"]), 0.05, 1.0))
+            relations.append(
+                BitemporalRelationVersion(
+                    relation_id=f"base_{u}_{v}_{idx}",
+                    src_symbol=u,
+                    dst_symbol=v,
+                    relation_type=rel_type,
+                    valid_from=base_dt,
+                    known_at=base_dt,
+                    weight=w,
+                    confidence=0.85,
+                )
             )
-        )
 
     if news_df is None or news_df.empty:
         return BitemporalKGBundle(events=tuple(events), relations=tuple(relations))
@@ -316,13 +373,15 @@ def build_bitemporal_bundle_from_news_and_edges(
     for idx, row in news_df.reset_index(drop=True).iterrows():
         sym = str(row["symbol"])
         title = str(row.get("title", ""))
-        raw_pub = row.get("publish_time") or row.get("published_at") or "2026-11-06T14:00:00+08:00"
-        try:
-            pub_dt = _ensure_utc(raw_pub)
-        except Exception:
-            pub_dt = _ensure_utc("2026-11-06T14:00:00+08:00")
-        obs_dt = max(pub_dt, _ensure_utc(row.get("observed_at", pub_dt)))
-        rdy_dt = obs_dt + timedelta(minutes=max(1, ingestion_delay_minutes))
+        raw_pub = row.get("publish_time")
+        if pd.isna(raw_pub):
+            raw_pub = row.get("published_at")
+        pub_dt = _ensure_utc(raw_pub)
+        raw_observed = row.get("observed_at")
+        obs_dt = pub_dt if pd.isna(raw_observed) else _ensure_utc(raw_observed)
+        raw_ready = row.get("ready_at")
+        rdy_dt = (obs_dt + timedelta(minutes=max(1, ingestion_delay_minutes))
+                  if pd.isna(raw_ready) else _ensure_utc(raw_ready))
 
         if "sentiment" in row and pd.notna(row["sentiment"]):
             score = float(np.clip(float(row["sentiment"]), -1.0, 1.0))
@@ -347,8 +406,8 @@ def build_bitemporal_bundle_from_news_and_edges(
             )
         )
 
-        # 若命中产业主题且源节点 u == sym，则生成带明确 known_at = rdy_dt 的关系版本（仅对 rdy_dt 之后的交易日可见）
-        if abs(score) >= 0.15:
+        # Versioned snapshots supply their own revisions. Generate heuristic overlays only for legacy priors.
+        if not versioned and not base_edges_df.empty and abs(score) >= 0.15:
             delta = 0.08 * score
             matching_edges = base_edges_df[base_edges_df["src_symbol"].astype(str) == sym]
             for _, edge_row in matching_edges.iterrows():
