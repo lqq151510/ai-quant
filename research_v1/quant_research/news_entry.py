@@ -5,10 +5,11 @@ from datetime import timedelta
 from .paper_entry import _timestamp, evaluate_paper_buy
 
 
-def compare_news_entry(observation: dict, batches: list[dict]) -> dict:
+def compare_news_entry(observation: dict, batches: list[dict], *, available_by: str | None = None) -> dict:
     baseline = evaluate_paper_buy(observation)
     cutoff = _timestamp(observation["as_of"], "as_of")
     start = cutoff - timedelta(hours=72)
+    visible_until = cutoff if available_by is None else min(cutoff, _timestamp(available_by, "available_by"))
     symbol = observation["symbol"].upper()
     visible = {}
 
@@ -21,7 +22,7 @@ def compare_news_entry(observation: dict, batches: list[dict]) -> dict:
             if symbol not in event["symbols"]:
                 continue
             observed = _timestamp(event.get("first_observed_at"), "first_observed_at").astimezone(cutoff.tzinfo)
-            if observed > cutoff:
+            if observed > visible_until:
                 continue
             event_id = event.get("event_id")
             source = event.get("source_url")

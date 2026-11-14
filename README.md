@@ -40,6 +40,15 @@ uv run --frozen --extra models python -m quant_research.cli demo --out artifacts
 
 数据探测、真实快照审计、分研究线运行与前向证据接口，见[研究工具使用说明](research_v1/README.md)。
 
+2026-11-16 至 11-20 的本地前向对照使用独立模拟账本。仓库收录[冻结协议](artifacts/news-filter-forward-20261116/protocol.md)、[运行说明](artifacts/news-filter-forward-20261116/runbook.md)及源码。安装上面的研究环境后，在仓库根目录运行离线测试：
+
+```bash
+PYTHONPATH=research_v1 research_v1/.venv/bin/python -m unittest discover \
+  -s artifacts/news-filter-forward-20261116 -p 'test_*.py'
+```
+
+新检出可运行合成情景；需要本地候选、新闻、原始行情或特征归档的回放测试会报告缺失并跳过。时点校验、盘口回放、收盘对账和周报代码都用于虚拟资金对照。
+
 ## 数据与研究边界
 
 - 原始行情、数据库、虚拟环境和本地实验产物不在仓库中；使用者需自行依法获取并遵守各数据源的使用条件。
