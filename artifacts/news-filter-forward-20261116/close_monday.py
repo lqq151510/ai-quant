@@ -333,6 +333,18 @@ def quote_coverage_summary(opening):
     return {**symbols, 'counts': counts}
 
 
+def news_archive_gaps(archive):
+    """Derive coverage gaps without changing previously saved archive evidence."""
+    gaps = {key: archive[key] for key in ('missing_dates', 'invalid_dates', 'incomplete_dates')
+            if archive.get(key)}
+    incomplete = set(gaps.get('incomplete_dates', ()))
+    statuses = archive.get('collection_status') or {}
+    incomplete.update(day for day, status in statuses.items() if status in ('legacy', 'partial', 'failed'))
+    if incomplete:
+        gaps['incomplete_dates'] = sorted(incomplete)
+    return gaps
+
+
 def close_report(opening, marks=None, *, day=DAY, prior=()):
     """Return (daily ledger or None, report) for one pair of session accounts."""
     if opening is None:
@@ -389,8 +401,7 @@ def close_report(opening, marks=None, *, day=DAY, prior=()):
     reconciled = reconcile([*prior, daily])['groups']
     news_errors = opening.get('news_errors', [])
     news_archive = opening.get('news_archive')
-    archive_gap = news_archive and any(news_archive.get(key) for key in
-                                       ('missing_dates', 'invalid_dates', 'incomplete_dates'))
+    archive_gap = news_archive_gaps(news_archive) if news_archive is not None else {}
     unavailable = [d for d in opening['filtered'].get('decisions', [])
                    if d['reason'] == 'news_data_unavailable']
     unavailable_details = {
@@ -412,7 +423,8 @@ def close_report(opening, marks=None, *, day=DAY, prior=()):
         'news_evidence': {'degraded': bool(news_errors or unavailable or archive_gap),
                           'errors': news_errors, 'unavailable_symbols': [d['symbol'] for d in unavailable],
                           **({'unavailable_details': unavailable_details} if unavailable_details else {}),
-                          **({'archive': news_archive} if news_archive is not None else {})},
+                          **({'archive': news_archive} if news_archive is not None else {}),
+                          **({'archive_gaps': archive_gap} if archive_gap else {})},
         'groups': summaries,
     }
 

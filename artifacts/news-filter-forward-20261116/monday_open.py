@@ -292,7 +292,7 @@ def news_snapshot(output, day=DAY):
         archive['loaded_dates'].append(batch_date)
         archive['collection_status'][batch_date] = status
         snapshot['sources'].append({'file': path.name, 'sha256': hashlib.sha256(payload).hexdigest()})
-        if status in ('partial', 'failed'):
+        if status in ('legacy', 'partial', 'failed'):
             archive['incomplete_dates'].append(batch_date)
         elif not batch['events']:
             archive['empty_dates'].append(batch_date)

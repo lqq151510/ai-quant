@@ -45,7 +45,7 @@ class NewsSnapshotTests(unittest.TestCase):
             return monday_open.news_snapshot(self.output, date.fromisoformat(day))
 
     def test_missing_weekend_is_a_coverage_gap_and_empty_batches_fill_it(self):
-        self.write_batch(FRIDAY, events=[{'id': 'sample'}])
+        self.write_batch(FRIDAY, collection_status='complete', events=[{'id': 'sample'}])
         friday_only = self.snapshot()
         info = friday_only['news_archive']
         self.assertEqual(info['expected_dates'], [FRIDAY, SATURDAY, SUNDAY])
@@ -242,7 +242,7 @@ class NewsSnapshotTests(unittest.TestCase):
     def test_archive_gap_blocks_verdict_even_with_five_verified_losses(self):
         records = with_sale(dict.fromkeys(SYMBOLS, '9.90'))
         self.assertEqual(weekly_report(records)['verdict'], 'both_improved')
-        self.write_batch(FRIDAY)
+        self.write_batch(FRIDAY, collection_status='complete')
         records[0]['news_archive'] = self.snapshot()['news_archive']
         report = weekly_report(records)
         self.assertEqual(report['news_archive_gaps'], [{'date': MONDAY, 'missing_dates': [SATURDAY, SUNDAY]}])
@@ -250,3 +250,86 @@ class NewsSnapshotTests(unittest.TestCase):
         self.assertEqual(report['verdict'], 'insufficient_evidence')
         self.assertEqual(report['distinct_verified_filtered_symbols'], list(SYMBOLS))
         self.assertIsNotNone(report['comparison'])
+
+    def test_legacy_archive_is_incomplete_but_keeps_observed_events(self):
+        self.write_batch(FRIDAY, events=[{'id': 'observed'}])
+        for day in (SATURDAY, SUNDAY):
+            self.write_batch(day, collection_status='complete')
+
+        snapshot = self.snapshot()
+        archive = snapshot['news_archive']
+        self.assertEqual(archive['collection_status'][FRIDAY], 'legacy')
+        self.assertEqual(archive['incomplete_dates'], [FRIDAY])
+        self.assertEqual(archive['empty_dates'], [SATURDAY, SUNDAY])
+        self.assertEqual(snapshot['batches'][0]['events'], [{'id': 'observed'}])
+        self.assertFalse(snapshot['errors'])
+
+    def test_empty_legacy_archive_is_not_verified_empty(self):
+        self.write_batch(FRIDAY)
+        for day in (SATURDAY, SUNDAY):
+            self.write_batch(day, collection_status='complete')
+
+        archive = self.snapshot()['news_archive']
+        self.assertEqual(archive['incomplete_dates'], [FRIDAY])
+        self.assertEqual(archive['empty_dates'], [SATURDAY, SUNDAY])
+
+    def test_complete_archive_does_not_block_weekly_verdict(self):
+        for day in (FRIDAY, SATURDAY, SUNDAY):
+            self.write_batch(day, collection_status='complete')
+        records = with_sale(dict.fromkeys(SYMBOLS, '9.90'))
+        records[0]['news_archive'] = self.snapshot()['news_archive']
+
+        report = weekly_report(records)
+        self.assertEqual(report['news_archive_gaps'], [])
+        self.assertEqual(report['verdict'], 'both_improved')
+
+    def test_saved_legacy_snapshot_degrades_close_and_blocks_weekly_verdict(self):
+        self.write_batch(FRIDAY)
+        for archive_day in (SATURDAY, SUNDAY):
+            self.write_batch(archive_day, collection_status='complete')
+        old_snapshot = self.snapshot()
+        old_snapshot['news_archive']['incomplete_dates'] = []
+        self.output.write_text(json.dumps(old_snapshot), encoding='utf-8')
+        original_bytes = self.output.read_bytes()
+        snapshot = self.snapshot()
+        self.assertEqual(self.output.read_bytes(), original_bytes)
+        self.assertEqual(snapshot['news_archive']['collection_status'][FRIDAY], 'legacy')
+
+        row = {'symbol': SYMBOLS[0], 'previous_close': '10.00', 'tick': '.01', 'kind': 'stock',
+               'cross_border': False}
+        prepared = {'coverage': 'synthetic', 'candidates': [row]}
+        empty = {'cash': '100000', 'positions': {}, 'nav': '100000'}
+        day = date(2026, 11, 17)
+        captured = synthetic_books(prepared['candidates'], 'eligible')
+        for book in captured['selected'].values():
+            for key in ('at', 'received_at'):
+                book[key] = book[key].replace(MONDAY, str(day))
+        opening = run_day(day, dict.fromkeys(('baseline', 'filtered'), empty), prepared, captured, snapshot)
+        self.assertEqual([len(opening[group]['fills']) for group in ('baseline', 'filtered')], [1, 1])
+        prior = {'mode': 'forward', 'date': MONDAY,
+                 **dict.fromkeys(('baseline', 'filtered'), {**empty, 'fills': [], 'close_prices': {}})}
+        daily, summary = close_report(opening, day=str(day), prior=[prior])
+        self.assertTrue(summary['news_evidence']['degraded'])
+        self.assertEqual(summary['news_evidence']['archive_gaps'], {'incomplete_dates': [FRIDAY]})
+
+        records = with_sale(dict.fromkeys(SYMBOLS, '9.90'))
+        records[0]['news_archive'] = daily['news_archive']
+        report = weekly_report(records)
+        self.assertEqual(report['news_archive_gaps'], [{'date': MONDAY, 'incomplete_dates': [FRIDAY]}])
+        self.assertEqual(report['insufficient_evidence_reasons'], ['incomplete_news_archive_coverage'])
+        self.assertEqual(report['verdict'], 'insufficient_evidence')
+        self.assertEqual(report['distinct_verified_filtered_symbols'], list(SYMBOLS))
+
+    def test_weekly_rechecks_legacy_status_in_old_archived_ledger(self):
+        archive = {'incomplete_dates': [SATURDAY],
+                   'collection_status': {FRIDAY: 'legacy', SATURDAY: 'partial', SUNDAY: 'complete'}}
+        records = with_sale(dict.fromkeys(SYMBOLS, '9.90'))
+        records[0]['news_archive'] = archive
+
+        report = weekly_report(records)
+        self.assertEqual(report['news_archive_gaps'],
+                         [{'date': MONDAY, 'incomplete_dates': [FRIDAY, SATURDAY]}])
+        self.assertEqual(report['insufficient_evidence_reasons'], ['incomplete_news_archive_coverage'])
+        self.assertEqual(report['verdict'], 'insufficient_evidence')
+        self.assertEqual(report['distinct_verified_filtered_symbols'], list(SYMBOLS))
+        self.assertEqual(archive['incomplete_dates'], [SATURDAY])

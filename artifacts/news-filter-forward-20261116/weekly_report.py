@@ -7,7 +7,7 @@ from collections import Counter
 from decimal import Decimal
 from pathlib import Path
 
-from close_monday import AmbiguousPartialLedgers, daily_ledger_path, quote_evidence_detail
+from close_monday import AmbiguousPartialLedgers, daily_ledger_path, news_archive_gaps, quote_evidence_detail
 from reconcile import reconcile
 
 BASE = Path(__file__).resolve().parent
@@ -258,8 +258,7 @@ def weekly_report(records, *, artifact_gaps=()):
         daily = {'date': day}
         if (archive := row.get('news_archive')) is not None:
             daily['news_archive'] = archive
-            gaps = {key: archive[key] for key in ('missing_dates', 'invalid_dates', 'incomplete_dates')
-                    if archive.get(key)}
+            gaps = news_archive_gaps(archive)
             if gaps:
                 archive_gaps.append({'date': day, **gaps})
         if row.get('news_errors'):
