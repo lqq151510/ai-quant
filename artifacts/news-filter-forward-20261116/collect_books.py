@@ -6,9 +6,11 @@ import hashlib
 import json
 import os
 import re
+import signal
 import time
 from datetime import date, datetime, time as wall_time
 from decimal import Decimal, InvalidOperation
+from http.client import HTTPException, IncompleteRead
 from pathlib import Path
 from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
@@ -37,13 +39,32 @@ def tencent_iopv(fields):
 
 
 def capture(url, timeout=8):
+    """Time one request on the standalone POSIX collector's main thread."""
+    if timeout <= 0:
+        raise TimeoutError('market request deadline already elapsed')
+    if signal.getitimer(signal.ITIMER_REAL)[0]:
+        raise RuntimeError('market capture requires an idle process alarm')
+
+    def expire(_signum, _frame):
+        raise TimeoutError('market request exceeded its deadline')
+
     req = Request(url, headers={'Referer': 'https://finance.sina.com.cn/', 'User-Agent': 'Mozilla/5.0'})
-    with urlopen(req, timeout=timeout) as reply:
-        payload = reply.read(2_000_001)
-        received = datetime.now(CST)
-    if len(payload) > 2_000_000:
-        raise ValueError('market payload too large')
-    return received.isoformat(), payload
+    previous_handler = signal.signal(signal.SIGALRM, expire)
+    try:
+        # The socket timeout alone restarts as each portion of the response arrives.
+        signal.setitimer(signal.ITIMER_REAL, timeout)
+        with urlopen(req, timeout=timeout) as reply:
+            payload = reply.read(2_000_001)
+            if len(payload) > 2_000_000:
+                raise ValueError('market payload too large')
+            if reply.length not in (0, None):
+                raise IncompleteRead(payload, reply.length)
+            return datetime.now(CST).isoformat(), payload
+    finally:
+        try:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+        finally:
+            signal.signal(signal.SIGALRM, previous_handler)
 
 
 def parse_books(vendor, payload, symbols):
@@ -284,7 +305,7 @@ def main():
                     if timeout <= 0:
                         break
                     received_at, payload = capture(url, timeout)
-                except (OSError, ValueError, IndexError, KeyError) as exc:
+                except (OSError, HTTPException, ValueError, IndexError, KeyError) as exc:
                     attempts.append({'source': vendor, 'url': url, 'error': str(exc)})
                     persist()
                     continue
