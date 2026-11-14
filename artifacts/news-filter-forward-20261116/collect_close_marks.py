@@ -208,9 +208,13 @@ def main():
         print(destination.read_text(encoding="utf-8"))
         return
     opening_path = out / "opening.json"
-    if day == DAY and not opening_path.exists() and not opening_path.is_symlink():
-        if not has_saved_capture(out, legacy_retry=True):
-            parser.exit(1, "周一开盘账本缺失，未找到可用于恢复的已保存盘口。\n")
+    if not opening_path.exists() and not opening_path.is_symlink():
+        try:
+            saved_capture = has_saved_capture(out, legacy_retry=(day == DAY))
+        except ValueError as exc:
+            parser.exit(1, f"{day} 开盘账本恢复失败：{exc}\n")
+        if not saved_capture:
+            parser.exit(1, f"{day} 开盘账本缺失，未找到可用于恢复的已保存盘口。\n")
         project = BASE.parents[1]
         research = project / "research_v1"
         try:
@@ -222,11 +226,11 @@ def main():
         except subprocess.CalledProcessError as exc:
             lines = exc.stderr.strip().splitlines() if exc.stderr else []
             reason = lines[-1] if lines else f"开盘程序退出码 {exc.returncode}"
-            parser.exit(1, f"周一开盘账本恢复失败：{reason}\n")
+            parser.exit(1, f"{day} 开盘账本恢复失败：{reason}\n")
         except OSError as exc:
-            parser.exit(1, f"周一开盘账本恢复失败：{exc}\n")
+            parser.exit(1, f"{day} 开盘账本恢复失败：{exc}\n")
         if not opening_path.is_file():
-            parser.exit(1, "周一开盘恢复未生成账本。\n")
+            parser.exit(1, f"{day} 开盘恢复未生成账本。\n")
     opening = json.loads(opening_path.read_bytes())
     held = held_symbols(opening, candidates, day=day)
     result = {"date": day.isoformat(), "marks": {}, "errors": {}, "attempts": {}}

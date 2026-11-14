@@ -1,6 +1,7 @@
 """Use the archived Friday responses to verify close data acceptance."""
 
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -132,37 +133,46 @@ class CloseMarksTest(unittest.TestCase):
                 self.assertIsNone(mark)
                 self.assertEqual(error, "previous_close_mismatch_corporate_action_unresolved")
 
-    def test_monday_close_restores_saved_open_before_collecting_held_marks(self):
-        now = datetime(2026, 11, 16, 18, tzinfo=collector.CST)
-        candidates = {"candidates": [{"symbol": "601988.SH", "previous_close": "7.04"}]}
-        opening = {"date": str(collector.DAY), "mode": "forward",
-                   "baseline": {"positions": {"601988.SH": 100}}, "filtered": {"positions": {}}}
-        for capture_path in ("books/books.json", "books-retry-2/capture-progress.json"):
-            with self.subTest(capture_path=capture_path), tempfile.TemporaryDirectory() as tmp:
+    def test_close_restores_saved_open_before_collecting_held_marks(self):
+        monday = collector.DAY
+        tuesday = date(2026, 11, 17)
+        for day, capture_path in (
+            (monday, "books/books.json"),
+            (monday, "books-retry-2/capture-progress.json"),
+            (tuesday, "books/books.json"),
+            (tuesday, "books/capture-progress.json"),
+        ):
+            with self.subTest(day=day, capture_path=capture_path), tempfile.TemporaryDirectory() as tmp:
+                now = datetime(2026, 11, day.day, 18, tzinfo=collector.CST)
+                candidates = {"candidates": [{"symbol": "601988.SH", "previous_close": "7.04"}]}
+                opening = {"date": str(day), "mode": "forward", "prior_closes": {"601988.SH": "7.04"},
+                           "baseline": {"positions": {"601988.SH": 100}}, "filtered": {"positions": {}}}
                 root = Path(tmp) / "artifacts" / "study"
-                out = root / str(collector.DAY)
+                out = root / str(day)
                 capture = out / capture_path
                 capture.parent.mkdir(parents=True)
                 capture.write_text("{}")
 
                 def replay(command, **kwargs):
-                    self.assertEqual(command[1:], [str(root / "scheduled_open.py"), "--date", str(collector.DAY)])
+                    self.assertEqual(command[1:], [str(root / "scheduled_open.py"), "--date", str(day)])
                     self.assertEqual(kwargs["env"]["PYTHONPATH"], str(Path(tmp) / "research_v1"))
                     (out / "opening.json").write_text(json.dumps(opening))
 
                 with (
                     patch.object(collector, "BASE", root),
                     patch.object(collector, "datetime") as clock,
-                    patch.object(collector, "load_frozen_inputs", return_value=candidates),
+                    patch.object(collector, "load_frozen_inputs", return_value=candidates if day == monday else None),
                     patch.object(collector.subprocess, "run", side_effect=replay) as dispatch,
-                    patch.object(collector, "collect", return_value=("601988.SH", None, "offline", {})) as marks,
-                    patch.object(sys, "argv", ["collect_close_marks.py"]),
+                    patch.object(collector, "collect", return_value=("601988.SH", {"close": "7.05"}, None, {})) as marks,
+                    patch.object(sys, "argv", ["collect_close_marks.py", "--date", str(day)]),
                     patch("builtins.print"),
                 ):
                     clock.now.return_value = now
                     collector.main()
                     dispatch.assert_called_once()
-                    marks.assert_called_once_with(out, "601988.SH", PREVIOUS_CLOSE, day=collector.DAY)
+                    marks.assert_called_once_with(out, "601988.SH", PREVIOUS_CLOSE, day=day)
+                    report = json.loads((out / "close_marks.json").read_text())
+                    self.assertEqual(report["marks"], {"601988.SH": {"close": "7.05"}})
 
     def test_monday_close_does_not_replay_without_capture_or_overwrite_invalid_opening(self):
         now = datetime(2026, 11, 16, 18, tzinfo=collector.CST)
@@ -183,7 +193,7 @@ class CloseMarksTest(unittest.TestCase):
                 with self.assertRaises(SystemExit) as raised:
                     collector.main()
                 self.assertEqual(raised.exception.code, 1)
-                stderr.write.assert_called_once_with("周一开盘账本缺失，未找到可用于恢复的已保存盘口。\n")
+                stderr.write.assert_called_once_with(f"{collector.DAY} 开盘账本缺失，未找到可用于恢复的已保存盘口。\n")
                 opening = out / "opening.json"
                 opening.write_text("{invalid")
                 (out / "books").mkdir()
@@ -193,6 +203,46 @@ class CloseMarksTest(unittest.TestCase):
                 dispatch.assert_not_called()
                 marks.assert_not_called()
                 self.assertEqual(opening.read_text(), "{invalid")
+
+    def test_later_close_requires_canonical_capture_and_reports_scheduler_error(self):
+        day = date(2026, 11, 17)
+        now = datetime(2026, 11, 17, 18, tzinfo=collector.CST)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "artifacts" / "study"
+            out = root / str(day)
+            legacy = out / "books-retry-2"
+            legacy.mkdir(parents=True)
+            (legacy / "books.json").write_text("{}")
+            failure = subprocess.CalledProcessError(1, "scheduled_open.py",
+                                                    stderr="detail\nno pinned opening inputs\n")
+            with (
+                patch.object(collector, "BASE", root),
+                patch.object(collector, "datetime") as clock,
+                patch.object(collector, "load_frozen_inputs", return_value=None),
+                patch.object(collector.subprocess, "run", side_effect=failure) as dispatch,
+                patch.object(collector, "collect") as marks,
+                patch.object(sys, "argv", ["collect_close_marks.py", "--date", str(day)]),
+                patch("sys.stderr") as stderr,
+            ):
+                clock.now.return_value = now
+                with self.assertRaises(SystemExit) as raised:
+                    collector.main()
+                self.assertEqual(raised.exception.code, 1)
+                stderr.write.assert_called_once_with(f"{day} 开盘账本缺失，未找到可用于恢复的已保存盘口。\n")
+                dispatch.assert_not_called()
+
+                books = out / "books"
+                books.mkdir()
+                (books / "books.json").write_text("{}")
+                stderr.reset_mock()
+                with self.assertRaises(SystemExit) as raised:
+                    collector.main()
+                self.assertEqual(raised.exception.code, 1)
+                stderr.write.assert_called_once_with(f"{day} 开盘账本恢复失败：no pinned opening inputs\n")
+                dispatch.assert_called_once()
+                marks.assert_not_called()
+                self.assertFalse((out / "opening.json").exists())
+                self.assertFalse((out / "close_marks.json").exists())
 
 
 if __name__ == "__main__":

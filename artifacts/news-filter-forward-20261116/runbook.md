@@ -21,7 +21,7 @@
     python3 artifacts/news-filter-forward-20261116/collect_close_marks.py
     python3 artifacts/news-filter-forward-20261116/close_monday.py
 
-11 月 17 至 20 日使用以下流程，把 DATE 换成实验交易日。使用上一日 15:00 后和当日 09:45 前采集的候选，优先按上一日已对账的持仓退出。前一日的部分账本可承接已验证的持仓和现金，缺净值时保留买入预算无法核实的原因。多份部分账本的执行记录和已知收盘价须一致，并且其中一份须包含其他版本的全部已核估值，才会自动选用该文件。冲突或无法选出单个版本时保留原始记录和错误。已发布的续跑账本记录所用前一日账本的路径及哈希，重跑时核对原记录。
+11 月 17 至 20 日使用以下流程，把 DATE 换成实验交易日。使用上一日 15:00 后和当日 09:45 前采集的候选，优先按上一日已对账的持仓退出。前一日的部分账本可承接已验证的持仓和现金，缺净值时保留买入预算无法核实的原因。多份部分账本的执行记录和已知收盘价须一致，并且其中一份须包含其他版本的全部已核估值，才会自动选用该文件。冲突或无法选出单个版本时保留原始记录和错误。续跑在第一次请求盘口前保存 `opening-inputs.json`，记录所用前序账本和候选文件的路径及哈希，候选缺失时也如实记录。收盘任务可从当天已保存盘口恢复开盘账本，使用原先固定的输入。证据缺失或原文件与校验值不符时，报告不可核实。已发布的续跑账本重跑时仍核对原前序记录。
 
     python3 artifacts/news-filter-forward-20261116/prepare_monday.py --date DATE
     PYTHONPATH=research_v1 research_v1/.venv/bin/python artifacts/news-filter-forward-20261116/continue_open.py --date DATE

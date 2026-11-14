@@ -97,13 +97,15 @@ class ForwardStudyIntegration(unittest.TestCase):
         self.assertEqual((opportunity['symbol'], opportunity['net_pnl'], opportunity['exit_date']),
                          ('603135.SH', '-22.39', DATES[1]))
 
-    def test_tuesday_uses_more_complete_monday_partial_and_keeps_its_provenance(self):
+    def test_tuesday_recovers_archived_quotes_with_the_original_inputs_after_close(self):
         monday, tuesday = DATES[:2]
         stock, etf = '601988.SH', '513100.SH'
-        prepared, _ = self.archived_inputs()
-        rows = [row for row in prepared['candidates'] if row['symbol'] in (stock, etf)]
-        open_monday = {'mode': 'forward', **run({**prepared, 'candidates': rows},
-                                              synthetic_books(rows, 'eligible'), [])}
+        rows = [
+            {'symbol': stock, 'kind': 'stock', 'tick': '.01', 'previous_close': '7.18', 'cross_border': False},
+            {'symbol': etf, 'kind': 'etf', 'tick': '.001', 'previous_close': '2.00', 'cross_border': True},
+        ]
+        prepared = {'candidates': rows, 'coverage': 'synthetic'}
+        open_monday = {'mode': 'forward', **run(prepared, synthetic_books(rows, 'eligible'), [])}
         with TemporaryDirectory() as directory:
             base = Path(directory).resolve()
             shutil.copyfile(monday_open.BASE / 'protocol.md', base / 'protocol.md')
@@ -113,38 +115,88 @@ class ForwardStudyIntegration(unittest.TestCase):
             self.assertIsNone(daily['baseline']['nav'])
             session = base / tuesday
             books = session / 'books'
-            books.mkdir(parents=True)
-            snd = save_attempt(books, 'tencent.txt', tencent_row(stock, 10).replace('20261116', '20261117'),
-                               '09:45:11', ['sh601988'])
-            snd['retrieved_at'] = tuesday + 'T09:45:11+08:00'
-            capture = {'date': tuesday, 'mode': 'forward', 'attempts': [snd], 'selected': {},
-                       'exit_selected': {stock: select(snd, stock)}, 'unavailable': {}}
-            (books / 'books.json').write_text(json.dumps(capture))
+            pin = session / 'opening-inputs.json'
+            candidate = base / f'{tuesday}-preparation' / 'candidates.json'
+            candidate.parent.mkdir()
+            candidate.write_text(json.dumps({'date': tuesday, 'captured_at': tuesday + 'T09:30:00+08:00',
+                                             'coverage': 'synthetic',
+                                             'candidates': [{**rows[0], 'previous_close': '2.00'}]}))
+            original_candidate = candidate.read_bytes()
+
             class Clock(datetime):
+                current = tuesday + 'T09:45:08+08:00'
+
                 @classmethod
                 def now(cls, tz):
-                    return cls.fromisoformat(tuesday + 'T09:45:12+08:00').astimezone(tz)
+                    return cls.fromisoformat(cls.current).astimezone(tz)
 
-            with patch.object(continue_open, 'BASE', base), patch.object(sys, 'argv', ['continue_open.py', '--date', tuesday]), \
-                 patch.object(continue_open, 'datetime', Clock), \
-                 patch.object(continue_open, 'news_snapshot', return_value={'batches': [], 'errors': [], 'sources': []}), \
-                 patch.object(continue_open.subprocess, 'run') as network:
-                continue_open.main()
+            def interrupt_after_capture(*args, **kwargs):
+                self.assertTrue(pin.is_file())
+                books.mkdir()
+                entry = save_attempt(books, 'tencent.txt', tencent_row(stock, 10, latest='2.000', ask='2.000',
+                                                                     ask_lots='100').replace('20261116', '20261117'),
+                                     '09:45:11', ['sh601988'])
+                entry['retrieved_at'] = tuesday + 'T09:45:11+08:00'
+                selected = {stock: select(entry, stock)}
+                capture = {'date': tuesday, 'mode': 'forward', 'attempts': [entry], 'selected': selected,
+                           'exit_selected': selected, 'unavailable': {}}
+                (books / 'books.json').write_text(json.dumps(capture))
+                raise InterruptedError('after saving the capture')
+
+            with (
+                patch.object(continue_open, 'BASE', base),
+                patch.object(sys, 'argv', ['continue_open.py', '--date', tuesday]),
+                patch.object(continue_open, 'datetime', Clock),
+                patch.object(continue_open, 'news_snapshot', return_value={'batches': [], 'errors': [], 'sources': []}),
+                patch.object(continue_open.subprocess, 'run', side_effect=interrupt_after_capture) as collector,
+            ):
+                with self.assertRaisesRegex(InterruptedError, 'after saving'):
+                    continue_open.main()
                 published = session / 'opening.json'
+                self.assertFalse(published.exists())
+                pinned_bytes = pin.read_bytes()
+                pinned = json.loads(pinned_bytes)
+                self.assertEqual(pinned['prepared']['sha256'], hashlib.sha256(original_candidate).hexdigest())
+
+                # A subsequent valuation can be reconciled, but would newly allow Tuesday buys.
+                complete, close = synthetic_close(open_monday, {stock: '2.00', etf: '2.00'})
+                save_report(base / monday, complete, close, True)
+                Clock.current = tuesday + 'T18:00:00+08:00'
+                pin.unlink()
+                with self.assertRaisesRegex(ValueError, 'not pinned'):
+                    continue_open.main()
+                pin.write_bytes(pinned_bytes)
+
+                candidate.write_bytes(original_candidate + b' ')
+                with self.assertRaisesRegex(ValueError, 'pinned candidate hash'):
+                    continue_open.main()
+                candidate.write_bytes(original_candidate)
+
+                original_partial = partial.read_bytes()
+                partial.write_bytes(original_partial + b' ')
+                with self.assertRaisesRegex(ValueError, 'pinned prior ledger hash'):
+                    continue_open.main()
+                partial.write_bytes(original_partial)
+
+                pin.write_text(json.dumps({**pinned, 'pinned_at': tuesday + 'T09:45:12+08:00'}))
+                with self.assertRaisesRegex(ValueError, 'received before the inputs were pinned'):
+                    continue_open.main()
+                pin.write_bytes(pinned_bytes)
+                continue_open.main()
                 original = published.read_bytes()
                 opened = json.loads(original)
                 self.assertEqual(opened['starting_from']['path'], str(partial.relative_to(base)))
                 self.assertEqual(opened['starting_from']['sha256'], hashlib.sha256(partial.read_bytes()).hexdigest())
                 self.assertEqual(opened['baseline']['positions'], {etf: daily['baseline']['positions'][etf]})
                 self.assertEqual([f['symbol'] for f in opened['baseline']['fills']], [stock])
-                complete, close = synthetic_close(open_monday, {stock: '2.00', etf: '2.00'})
-                save_report(base / monday, complete, close, True)
+                self.assertIn('previous_nav_unverified', {d['reason'] for d in opened['baseline']['decisions']})
                 continue_open.main()
                 self.assertEqual(published.read_bytes(), original)
+                self.assertEqual(pin.read_bytes(), pinned_bytes)
                 partial.write_bytes(partial.read_bytes() + b' ')
                 with self.assertRaisesRegex(ValueError, 'prior ledger.*hash'):
                     continue_open.main()
-                network.assert_not_called()
+                collector.assert_called_once()
 
     def test_partial_capture_finalizes_without_network_after_cutoff(self):
         class Clock(datetime):

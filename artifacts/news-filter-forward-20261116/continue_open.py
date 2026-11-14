@@ -10,7 +10,7 @@ from decimal import Decimal, ROUND_FLOOR
 
 from collect_books import CST, quote_status
 from book_evidence import verify_capture
-from close_monday import prior_paths, validate_prior
+from close_monday import SESSIONS, prior_paths, validate_prior
 from monday_open import BASE, DAY, IOPV_SYMBOL, PROTOCOL, decide, news_snapshot, publish_once, tick_price
 from quant_research.ledger import Costs
 from reconcile import reconcile
@@ -200,6 +200,83 @@ def verify_saved_opening(path, day):
         raise ValueError('existing opening prior ledger is missing or its hash has changed')
 
 
+def verified_input(reference, allowed_path, label):
+    relative = reference.get('path') if isinstance(reference, dict) else None
+    if not isinstance(relative, str) or not re.fullmatch(allowed_path, relative):
+        raise ValueError(f'invalid pinned {label} path')
+    path = BASE / relative
+    if path.resolve() != path or not path.is_file():
+        raise ValueError(f'pinned {label} file is missing or noncanonical')
+    payload = path.read_bytes()
+    if hashlib.sha256(payload).hexdigest() != reference.get('sha256'):
+        raise ValueError(f'pinned {label} hash has changed')
+    return json.loads(payload)
+
+
+def load_opening_inputs(manifest, day):
+    start = datetime.combine(day, time(9, 45), CST)
+    end = datetime.combine(day, time(9, 50), CST)
+    if not isinstance(manifest, dict) or manifest.get('mode') != 'forward' or manifest.get('date') != str(day):
+        raise ValueError('invalid opening inputs manifest for the requested date')
+    stamp = manifest.get('pinned_at')
+    if not isinstance(stamp, str):
+        raise ValueError('opening inputs manifest has no pin time')
+    pinned_at = datetime.fromisoformat(stamp)
+    if pinned_at.utcoffset() is None or not start <= pinned_at <= end:
+        raise ValueError('opening inputs must be pinned in the capture window')
+    expected = SESSIONS[:SESSIONS.index(str(day))]
+    references = manifest.get('prior_ledgers')
+    if not isinstance(references, list) or len(references) != len(expected):
+        raise ValueError('opening inputs manifest has invalid prior ledger coverage')
+    records = [
+        verified_input(ref, rf'{session}/(?:close-partials/[a-f0-9]{{64}}/)?daily[.]json', 'prior ledger')
+        for session, ref in zip(expected, references)
+    ]
+    validate_prior(records, str(day))
+    reconcile(records)
+    if 'prepared' not in manifest:
+        raise ValueError('opening inputs manifest has no candidate reference')
+    prepared = None
+    if manifest['prepared'] is not None:
+        prepared = verified_input(manifest['prepared'], rf'{day}-preparation/candidates[.]json', 'candidate')
+        if (not isinstance(prepared, dict) or prepared.get('date') != str(day)
+                or not isinstance(prepared.get('captured_at'), str)
+                or not isinstance(prepared.get('candidates'), list)):
+            raise ValueError('invalid pinned candidate evidence')
+        captured_at = datetime.fromisoformat(prepared['captured_at'])
+        if captured_at.utcoffset() is None or captured_at >= start:
+            raise ValueError('candidate evidence was not available before opening')
+    return records[-1], prepared, pinned_at
+
+
+def opening_inputs(path, day, books):
+    """Publish inputs before sampling. Recover only with the first recorded inputs."""
+    def read_saved():
+        if path.resolve() != path:
+            raise ValueError('opening inputs manifest path is not canonical')
+        return json.loads(path.read_bytes())
+
+    if path.exists() or path.is_symlink():
+        return read_saved()
+    if (datetime.now(CST) > datetime.combine(day, time(9, 50), CST)
+            or any((books / name).exists() for name in ('books.json', 'capture-progress.json'))):
+        raise ValueError('opening inputs were not pinned before capture')
+
+    def reference(input_path):
+        if input_path.resolve() != input_path or not input_path.is_file():
+            raise ValueError('opening input path is not a canonical file')
+        return {'path': str(input_path.relative_to(BASE)),
+                'sha256': hashlib.sha256(input_path.read_bytes()).hexdigest()}
+
+    prior = [reference(prior_path) for prior_path in prior_paths(BASE, str(day))]
+    candidate = BASE / f'{day}-preparation/candidates.json'
+    prepared = reference(candidate) if candidate.exists() or candidate.is_symlink() else None
+    manifest = {'mode': 'forward', 'date': str(day), 'pinned_at': datetime.now(CST).isoformat(),
+                'prior_ledgers': prior, 'prepared': prepared}
+    load_opening_inputs(manifest, day)
+    return publish_once(path, manifest, read_existing=read_saved)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--date', required=True, type=date.fromisoformat)
@@ -218,38 +295,37 @@ def main():
             raise ValueError('existing opening path is not canonical')
         verify_saved_opening(published, day)
         return
-    paths = prior_paths(BASE, str(day))
-    raw_ledgers = [path.read_bytes() for path in paths]
-    records = [json.loads(raw) for raw in raw_ledgers]
-    validate_prior(records, str(day))
-    reconcile(records)
-    previous = records[-1]
+    books = out/'books'
     out.mkdir(exist_ok=True)
+    manifest = opening_inputs(out/'opening-inputs.json', day, books)
+    previous, prepared, pinned_at = load_opening_inputs(manifest, day)
     snapshot = news_snapshot(out/'opening-news.json', day)
-    path = BASE / f'{day}-preparation/candidates.json'
-    prepared = json.loads(path.read_text()) if path.is_file() else None
-    if prepared and (prepared['date'] != str(day) or
-                     datetime.fromisoformat(prepared['captured_at']) >= datetime.combine(day, time(9, 45), CST)):
-        raise ValueError('candidate evidence was not available before opening')
     held = {symbol for group in GROUPS for symbol in previous[group]['positions']}
     buy_symbols = {row['symbol'] for row in (prepared['candidates'] if prepared else [])}
     symbols = sorted(held | buy_symbols)
-    books = out/'books'
+    end = datetime.combine(day, time(9, 50), CST)
     if not symbols:
         captured = {'mode': 'forward', 'date': str(day), 'selected': {}, 'unavailable': {}, 'attempts': []}
     else:
         if not (books/'books.json').is_file():
-            if now > datetime.combine(day, time(9, 50), CST) and not (books/'capture-progress.json').is_file():
+            if datetime.now(CST) > end and not (books/'capture-progress.json').is_file():
                 raise ValueError('no intraday capture to replay')
             limits = [arg for symbol in sorted(held) for arg in ('--require-limits', symbol)]
             subprocess.run([sys.executable, str(BASE/'collect_books.py'), '--date', str(day), '--out', str(books),
                             '--require-513100-iopv', *limits, *symbols], check=True)
         captured = json.loads((books/'books.json').read_text())
     captured = verify_capture(captured, books, day, symbols, held=held, buy_symbols=buy_symbols)
+    start = datetime.combine(day, time(9, 45), CST)
+    for attempt in captured['attempts']:
+        if attempt.get('evidence_error') or not attempt.get('books'):
+            continue
+        received_at = datetime.fromisoformat(attempt['retrieved_at'])
+        if start <= received_at < pinned_at:
+            raise ValueError('archived opening quote was received before the inputs were pinned')
     result = run_day(day, previous, prepared, captured, snapshot)
     result['book_evidence_errors'] = captured.get('evidence_errors', {})
-    result['starting_from'] = {'date': previous['date'], 'path': str(paths[-1].relative_to(BASE)),
-                               'sha256': hashlib.sha256(raw_ledgers[-1]).hexdigest()}
+    prior = manifest['prior_ledgers'][-1]
+    result['starting_from'] = {'date': previous['date'], 'path': prior['path'], 'sha256': prior['sha256']}
     publish_once(out/'opening.json', result)
 
 
