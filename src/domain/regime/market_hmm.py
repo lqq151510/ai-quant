@@ -159,8 +159,8 @@ class StickyMarketRegimeHMM:
             alpha = post / (np.sum(post) + 1e-12)
 
             state_id = int(np.argmax(alpha))
-            # 根据隐状态后验概率加权计算建议最大权益敞口: Bull=0.92, Osc=0.75, Crisis=0.45
-            rec_exposure = float(alpha[0] * 0.92 + alpha[1] * 0.75 + alpha[2] * 0.45)
+            # 根据隐状态后验概率加权计算建议最大权益敞口: Bull=0.98, Osc=0.90, Crisis=0.48
+            rec_exposure = float(alpha[0] * 0.98 + alpha[1] * 0.90 + alpha[2] * 0.48)
             snapshots.append(
                 MarketRegimeSnapshot(
                     trade_date=pd.Timestamp(macro_df["trade_date"].iloc[t]),

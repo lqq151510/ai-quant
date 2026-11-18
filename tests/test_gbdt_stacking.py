@@ -43,3 +43,27 @@ class GBDTStackingTests(unittest.TestCase):
         [(prediction, target)] = list(iter_observed_cross_sections(predictions, targets))
         np.testing.assert_array_equal(prediction, [1.0, 2.0])
         np.testing.assert_array_equal(target, [2.0, 5.0])
+
+    def test_validation_adaptive_shrinkage_downweights_negative_gnn_without_flipping(self) -> None:
+        rng = np.random.default_rng(101)
+        train_x = rng.normal(size=(120, 6, 5, 2))
+        val_x = rng.normal(size=(30, 6, 5, 2))
+        test_x = rng.normal(size=(25, 6, 5, 2))
+        train_y = 0.8 * train_x[:, :, -1, 0] + 0.05 * rng.normal(size=(120, 6))
+        val_y = 0.8 * val_x[:, :, -1, 0]
+        test_y = 0.8 * test_x[:, :, -1, 0]
+
+        gnn_preds = {
+            "train_preds": -train_y.copy(),
+            "val_preds": -val_y.copy(),
+            "test_preds": -test_y.copy(),
+        }
+        model = OrthogonalTreeGNNStacker(random_state=42)
+        blended, _ = model.fit_and_blend(train_x, train_y, val_x, val_y, test_x, gnn_preds)
+        self.assertLess(model.expert_weights["gnn"], 0.10)
+        self.assertGreater(model.expert_weights["ridge"] + model.expert_weights["tree"], 0.90)
+        oos_ics = [
+            float(np.corrcoef(p, y)[0, 1])
+            for p, y in iter_observed_cross_sections(blended["test_preds"], test_y)
+        ]
+        self.assertGreater(float(np.mean(oos_ics)), 0.70)

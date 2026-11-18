@@ -47,6 +47,18 @@ def expectile_loss(diff: torch.Tensor, expectile: float = 0.75) -> torch.Tensor:
     return (weight * (diff ** 2)).mean()
 
 
+def predict_pessimistic_iql_ensemble(
+    models: List[IQLNetworks],
+    obs_t: torch.Tensor,
+    disagreement_penalty: float = 0.5,
+) -> torch.Tensor:
+    """计算多种子 Offline-IQL 策略残差均值，并按跨种子认识不确定性 (标准差) 保守收缩."""
+    preds = torch.stack([m.policy_net(obs_t) for m in models], dim=0)
+    mean_d = preds.mean(dim=0)
+    std_d = preds.std(dim=0, unbiased=False)
+    return mean_d / (1.0 + disagreement_penalty * std_d)
+
+
 def train_offline_iql_agent(
     train_env: ASharePortfolioEnv,
     n_behavior_episodes: int = 18,
@@ -54,12 +66,13 @@ def train_offline_iql_agent(
     expectile_tau: float = 0.75,
     awr_temp: float = 3.0,
 ) -> IQLNetworks:
-    """从多风险偏好行为策略采集的离线数据集上，通过 Expectile Regression + AWR 训练 Offline IQL."""
+    """从多现金防守水位与零均值高斯探针采集稠密离线轨迹，通过 Expectile Regression + AWR 训练 Offline IQL."""
     obs_dim = train_env.observation_space.shape[0]
     act_dim = train_env.action_space.shape[0]
     n_assets = train_env.n_assets
+    top_k = getattr(train_env, "top_k", 3)
 
-    # 1. 构建包含多种现金防守水位与噪声水平的离线历史数据集 D = {(s, a, r, s', done)}
+    # 1. 构建覆盖多现金防守水位与零均值高斯残差探索的离线历史数据集
     s_buf, a_buf, r_buf, sp_buf, d_buf, prior_buf = [], [], [], [], [], []
     cash_biases = [-0.4, 0.0, 0.4, 0.9, 1.4, 2.0]
 
@@ -70,14 +83,15 @@ def train_offline_iql_agent(
         noise_scale = 0.25 if ep % 2 == 0 else 0.60
 
         while not done:
-            prior = build_alpha_risk_prior(obs, n_assets).squeeze(0).numpy()
+            prior = build_alpha_risk_prior(obs, n_assets, top_k=top_k).squeeze(0).numpy()
             prior[-1] += c_bias
-            act = prior + np.random.normal(0.0, noise_scale, size=act_dim).astype(np.float32)
+            res_a = np.random.normal(0.0, noise_scale, size=act_dim).astype(np.float32)
+            act = (prior + res_a).astype(np.float32)
             next_obs, reward, done, _, _ = train_env.step(act)
 
             s_buf.append(obs)
-            a_buf.append(act - prior)  # 学习相对于先验的残差修正动作
-            r_buf.append(reward)
+            a_buf.append(res_a)  # 学习相对于先验的残差修正动作
+            r_buf.append(float(reward))
             sp_buf.append(next_obs)
             d_buf.append(float(done))
             prior_buf.append(prior)
@@ -96,7 +110,7 @@ def train_offline_iql_agent(
     q_opt = torch.optim.AdamW(iql.q_net.parameters(), lr=2e-3, weight_decay=1e-4)
     pi_opt = torch.optim.AdamW(iql.policy_net.parameters(), lr=2e-3, weight_decay=1e-4)
 
-    gamma = 0.97
+    gamma = 0.96
     for _ in range(iql_epochs):
         # Step A: Expectile Regression 更新价值上界函数 V(s)
         with torch.no_grad():
@@ -174,7 +188,7 @@ def evaluate_hrp_hmm_iql_portfolio(
 
         with torch.no_grad():
             obs_t = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
-            prior = build_alpha_risk_prior(obs, n_assets).squeeze(0).numpy()
+            prior = build_alpha_risk_prior(obs, n_assets, top_k=top_k).squeeze(0).numpy()
             delta_a = iql_model.policy_net(obs_t).squeeze(0).numpy()
             logits = np.clip(prior + 0.30 * delta_a, -10.0, 10.0)
             exp_a = np.exp(logits - np.max(logits))

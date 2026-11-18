@@ -16,15 +16,21 @@ def build_alpha_risk_prior(obs: np.ndarray, n_assets: int, top_k: int = 3) -> to
     current_dd = float(obs[-1])
 
     k = min(max(1, top_k), n_assets)
-    keep_m = min(n_assets, max(k + 1, int(np.ceil(k * 1.5))))
+    if k > n_assets // 2 and n_assets > 1:
+        keep_m = min(n_assets - 1, k + max(1, (n_assets - k) // 2))
+    else:
+        keep_m = min(n_assets, max(k + 1, int(np.ceil(k * 1.5))))
     sorted_alphas = np.sort(alphas)
     top_k_thresh = sorted_alphas[-k]
     buffer_m_thresh = sorted_alphas[-keep_m]
     median_alpha = float(np.median(alphas))
 
-    # 滞回缓冲规则：新进标的需进入 Top-K；已持仓标的只要仍居 Top-M 且高于截面中位数即可获持仓惯性加分，抑制无效换手
+    # 滞回缓冲规则：新进标的需进入 Top-K；已持仓标的只要仍居 Top-M 且高于截面门槛即可获持仓惯性加分，抑制无效换手
     is_held = current_weights > 1e-3
-    in_buffer = is_held & (alphas >= max(buffer_m_thresh, median_alpha))
+    if k > n_assets // 2:
+        in_buffer = is_held & (alphas >= buffer_m_thresh)
+    else:
+        in_buffer = is_held & (alphas >= max(buffer_m_thresh, median_alpha))
     active_mask = (alphas >= top_k_thresh) | in_buffer
     inertia_bonus = np.where(in_buffer, 1.35, 0.0)
     masked_alpha = np.where(active_mask, alphas * 2.5 + 1.5 + inertia_bonus, -4.5)
@@ -57,7 +63,9 @@ class PPOPortfolioActorCritic(nn.Module):
             nn.Tanh(),
             nn.Linear(hidden_dim, 1),
         )
-        self.log_std = nn.Parameter(torch.full((1, action_dim), -0.8))
+        self.log_std = nn.Parameter(torch.full((1, action_dim), -1.15))
+        nn.init.orthogonal_(self.actor_net[-1].weight, gain=0.05)
+        nn.init.zeros_(self.actor_net[-1].bias)
 
     def forward(self, obs: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         return self.actor_net(obs), self.critic_net(obs)
@@ -97,6 +105,8 @@ def train_ppo_portfolio_agent(
     obs_dim = train_env.observation_space.shape[0]
     act_dim = train_env.action_space.shape[0]
     n_assets = train_env.n_assets
+    top_k = getattr(train_env, "top_k", 3)
+    reb_int = max(1, int(getattr(train_env, "rebalance_interval", 3)))
 
     model = PPOPortfolioActorCritic(obs_dim, act_dim)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
@@ -106,10 +116,10 @@ def train_ppo_portfolio_agent(
         obs_list, act_list, old_logp_list, rew_list, val_list, prior_list = [], [], [], [], [], []
         done = False
 
-        # 1. 采集完整交易周期轨迹
+        # 1. 仅在真实调仓决策点采样并执行 Semi-MDP 宏步推进，剔除中间非调仓幻影步噪声
         while not done:
             obs_t = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
-            prior_t = build_alpha_risk_prior(obs, n_assets)
+            prior_t = build_alpha_risk_prior(obs, n_assets, top_k=top_k)
             with torch.no_grad():
                 mean_delta, val = model(obs_t)
                 mean = mean_delta * 0.35 + prior_t
@@ -118,14 +128,22 @@ def train_ppo_portfolio_agent(
                 act = dist.sample()
                 logp = dist.log_prob(act).sum(dim=-1)
 
-            next_obs, reward, done, _, _ = train_env.step(act.squeeze(0).numpy())
+            act_np = act.squeeze(0).numpy()
+            macro_rew = 0.0
+            for sub_k in range(reb_int):
+                next_obs, reward, done, _, info = train_env.step(act_np)
+                adj_r = float(reward) - 20.0 * float(info.get("bench_ret", 0.0))
+                macro_rew += (0.995 ** sub_k) * adj_r
+                obs = next_obs
+                if done:
+                    break
+
             obs_list.append(obs_t)
             act_list.append(act)
             old_logp_list.append(logp)
-            rew_list.append(reward)
+            rew_list.append(macro_rew)
             val_list.append(float(val.item()))
             prior_list.append(prior_t)
-            obs = next_obs
 
         # 2. 计算 GAE 优势函数
         adv_t, ret_t = compute_gae(rew_list, val_list)
@@ -134,7 +152,7 @@ def train_ppo_portfolio_agent(
         batch_old_logp = torch.cat(old_logp_list, dim=0)
         batch_priors = torch.cat(prior_list, dim=0)
 
-        # 3. 多轮 PPO Clipped Surrogate 更新
+        # 3. 多轮 PPO Clipped Surrogate + 残差信任域 L2 锚定更新
         for _ in range(ppo_epochs):
             mean_delta, values_pred = model(batch_obs)
             mean = mean_delta * 0.35 + batch_priors
@@ -150,7 +168,7 @@ def train_ppo_portfolio_agent(
             policy_loss = -torch.min(surr1, surr2).mean()
             value_loss = nn.SmoothL1Loss()(values_pred.squeeze(-1), ret_t)
 
-            loss = policy_loss + 0.5 * value_loss - entropy_coef * entropy
+            loss = policy_loss + 0.5 * value_loss - entropy_coef * entropy + 0.03 * (mean_delta ** 2).mean()
             optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -170,10 +188,11 @@ def evaluate_ppo_agent(
     net_rets, bench_rets, cash_weights = [], [], []
     last_alloc = np.zeros(test_env.n_assets + 1, dtype=np.float32)
 
+    top_k = getattr(test_env, "top_k", 3)
     while not done:
         with torch.no_grad():
             obs_t = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
-            prior_t = build_alpha_risk_prior(obs, test_env.n_assets)
+            prior_t = build_alpha_risk_prior(obs, test_env.n_assets, top_k=top_k)
             mean_delta, _ = model(obs_t)
             act = (mean_delta * 0.35 + prior_t).squeeze(0).numpy()
 

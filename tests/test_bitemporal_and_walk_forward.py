@@ -32,6 +32,9 @@ from src.domain.kg_gnn.bitemporal_kg_bridge import (
     compute_bitemporal_3hop_features_and_adjacency,
 )
 from src.domain.kg_gnn.graph_model import SpatioTemporalKGAlphaModel
+from src.domain.rl_portfolio.a_share_env import ASharePortfolioEnv
+from src.domain.rl_portfolio.offline_iql import IQLNetworks, predict_pessimistic_iql_ensemble
+from src.domain.rl_portfolio.ppo_agent import train_ppo_portfolio_agent
 
 
 class BitemporalAndWalkForwardTests(unittest.TestCase):
@@ -481,6 +484,118 @@ class BitemporalAndWalkForwardTests(unittest.TestCase):
         self.assertGreaterEqual(len(edges_df), 80)
         self.assertTrue((edges_df["weight"] > 0.0).all() and (edges_df["weight"] <= 1.0).all())
 
+    def test_buffered_top_k_retains_third_ranked_holding_in_four_etf_universe(self) -> None:
+        scores = np.array([0.90, 0.75, 0.60, -0.80])
+        prev_w = np.array([0.0, 0.50, 0.50, 0.0])
+        selected = select_buffered_top_k(scores, prev_w, top_k=2, buffer_mult=1.6)
+        self.assertEqual(selected.tolist(), [1, 2])
+
+    def test_turnover_deadband_zeroes_exited_holdings_without_tail_bleed(self) -> None:
+        prev_w = np.array([0.50, 0.50, 0.0, 0.0])
+        prop_w = np.array([0.0, 0.0, 0.50, 0.50])
+        out_w, should_trade = apply_turnover_deadband(prop_w, prev_w, l1_deadband=0.16, inertia_blend=0.40)
+        self.assertTrue(should_trade)
+        np.testing.assert_allclose(out_w[:2], [0.0, 0.0])
+        np.testing.assert_allclose(out_w[2:], [0.50, 0.50])
+
+    def test_swap_margin_blocks_marginal_churn_and_allows_decisive_upgrade(self) -> None:
+        scores_marginal = np.array([0.20, 0.15, 0.05, -0.10])
+        prev_w = np.array([0.0, 0.50, 0.0, 0.50])
+        kept = select_buffered_top_k(scores_marginal, prev_w, top_k=2, swap_margin=0.45)
+        self.assertEqual(kept.tolist(), [1, 3])
+
+        scores_decisive = np.array([0.90, 0.15, 0.05, -0.40])
+        upgraded = select_buffered_top_k(scores_decisive, prev_w, top_k=2, swap_margin=0.45)
+        self.assertEqual(upgraded.tolist(), [0, 1])
+
+    def test_redistribute_under_stock_limits_fills_target_exposure_without_breaching_cap(self) -> None:
+        stock_mask = np.array([True] * 18 + [False])
+        proposal = np.zeros(19, dtype=np.float64)
+        proposal[:18] = np.linspace(0.08, 0.03, 18)
+        proposal[18] = 0.05
+        out = walk_forward_engine._redistribute_under_stock_limits(proposal, stock_mask, target_exposure=0.90)
+        self.assertAlmostEqual(float(out.sum()), 0.90, places=6)
+        self.assertTrue((out[:18] <= 0.05 + 1e-9).all())
+        self.assertLessEqual(float(out[:18].max() / out.sum()), 0.5 + 1e-9)
+
+    def test_deadband_trims_only_breaching_stock_inside_deadband(self) -> None:
+        stock_mask = np.array([True, True, False])
+        prev_w = np.array([0.054, 0.040, 0.100])
+        prop_w = np.array([0.044, 0.038, 0.105])
+        out_w, trade = apply_turnover_deadband(prop_w, prev_w, l1_deadband=0.16, stock_mask=stock_mask)
+        self.assertTrue(trade)
+        np.testing.assert_allclose(out_w, [0.050, 0.040, 0.100])
+
+    def test_redistribute_under_stock_limits_completes_residual_exposure_via_etfs(self) -> None:
+        stock_mask = np.array([True] * 16 + [False] * 4)
+        proposal = np.zeros(20, dtype=np.float64)
+        proposal[:16] = 1.0 / 16.0
+        alpha = np.concatenate([np.linspace(-0.5, 0.5, 16), np.array([-0.2, 0.8, 0.9, -0.4])])
+        out = walk_forward_engine._redistribute_under_stock_limits(
+            proposal, stock_mask, target_exposure=0.94, stock_cap=0.044, alpha=alpha,
+        )
+        self.assertAlmostEqual(float(out.sum()), 0.94, places=6)
+        self.assertTrue((out[:16] <= 0.044 + 1e-9).all())
+        self.assertAlmostEqual(float(out[16:].sum()), 0.94 - 16 * 0.044, places=6)
+        self.assertEqual(float(out[16]), 0.0)
+        self.assertEqual(float(out[19]), 0.0)
+
+    def test_pessimistic_iql_ensemble_shrinks_on_disagreement_and_semimdp_ppo_converges(self) -> None:
+        def _const_net(bias_vec: list[float]) -> IQLNetworks:
+            net = IQLNetworks(obs_dim=8, act_dim=3, hidden_dim=16)
+            with torch.no_grad():
+                for layer in net.policy_net:
+                    if isinstance(layer, torch.nn.Linear):
+                        layer.weight.zero_()
+                        layer.bias.zero_()
+                net.policy_net[-1].bias.copy_(torch.tensor(bias_vec, dtype=torch.float32))
+            return net
+
+        obs_t = torch.ones((1, 8), dtype=torch.float32)
+        with torch.no_grad():
+            agree_out = predict_pessimistic_iql_ensemble(
+                [_const_net([1.0, 0.5, 0.0]), _const_net([1.0, 0.5, 0.0])], obs_t, disagreement_penalty=1.5,
+            )
+            disagree_out = predict_pessimistic_iql_ensemble(
+                [_const_net([2.0, 0.5, 0.0]), _const_net([0.0, 0.5, 0.0])], obs_t, disagreement_penalty=1.5,
+            )
+        self.assertAlmostEqual(float(agree_out[0, 0]), 1.0, places=6)
+        self.assertAlmostEqual(float(disagree_out[0, 0]), 0.4, places=6)
+        self.assertLess(float(disagree_out[0, 0].abs()), float(agree_out[0, 0].abs()))
+
+        rng = np.random.default_rng(7)
+        alpha = rng.normal(0.0, 1.0, size=(22, 3)).astype(np.float32)
+        vol = rng.normal(0.0, 0.5, size=(22, 3)).astype(np.float32)
+        rets = rng.normal(0.0005, 0.01, size=(22, 3)).astype(np.float32)
+        env = ASharePortfolioEnv(alpha, vol, rets, rebalance_interval=5, top_k=2)
+        ppo_model = train_ppo_portfolio_agent(env, rollout_episodes=4, ppo_epochs=2)
+        with torch.no_grad():
+            action_mean, value = ppo_model(torch.zeros((1, env.observation_space.shape[0]), dtype=torch.float32))
+        self.assertTrue(torch.isfinite(action_mean).all())
+        self.assertTrue(torch.isfinite(value).all())
+
+    def test_broad_universe_buffered_top_k_and_etf_slack_snapping(self) -> None:
+        # N=28, K=22 时 keep_m 应收缩为 25，不再把倒数第 2/3 名也放进缓冲区；排名第 27 的旧仓应被替换
+        scores = np.linspace(2.0, -2.0, 28)
+        prev_w = np.zeros(28, dtype=np.float64)
+        prev_w[:21] = 0.04
+        prev_w[26] = 0.04  # rank 27 -> outside top 25 and beyond swap_margin from rank 22
+        selected = select_buffered_top_k(scores, prev_w, top_k=22, swap_margin=0.25, max_drop=2)
+        self.assertEqual(len(selected), 22)
+        self.assertNotIn(26, selected.tolist())
+        self.assertIn(21, selected.tolist())
+
+        # N>6 时保留个股若偏离 < 0.9%，应锁定原权重免交易并由活跃 ETF 吸收权重差额
+        stock_mask = np.array([True] * 8 + [False, False])
+        old_w = np.array([0.042] * 7 + [0.0, 0.25, 0.20], dtype=np.float64)
+        prop_w = np.array([0.045] * 6 + [0.0, 0.044, 0.24, 0.20], dtype=np.float64)
+        out_w, should_trade = apply_turnover_deadband(
+            prop_w, old_w, l1_deadband=0.08, inertia_blend=0.0, max_exposure=0.90, stock_mask=stock_mask,
+        )
+        self.assertTrue(should_trade)
+        np.testing.assert_allclose(out_w[:6], old_w[:6], atol=1e-9)
+        self.assertAlmostEqual(float(out_w[6]), 0.0, places=9)
+        self.assertAlmostEqual(float(out_w.sum()), float(prop_w.sum()), places=6)
 
 
 if __name__ == "__main__":

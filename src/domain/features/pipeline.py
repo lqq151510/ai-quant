@@ -18,12 +18,14 @@ FEATURE_COLUMNS: List[str] = [
 ]
 
 MICRO_FEATURE_COLUMNS: List[str] = [
-    "cmf_20d",          # 数据升级1A: 20日主力资金流承接强度 (Chaikin Smart Money Flow = CLV * 相对量比)
-    "asym_semi_20d",    # 数据升级1B: 20日上下行已实现半方差不对称性 (Realized Semivariance Asymmetry)
-    "smart_flow_1d",    # 数据升级1C: 当日日内尾盘主力资金承接强度 (CLV * 相对量比)
-    "overnight_ret_5d", # 数据升级1D: 5日隔夜跳空累计动量 (A股 T+1 集合竞价知情资金方向)
-    "intraday_ret_5d",  # 数据升级1E: 5日日内实体累计动量 (A股日内交易追涨/承接力度)
-    "idio_mom_20d",     # 数据升级1F: 20日截面市场残差特异动量 (剥离市场Beta后的纯Alpha动量)
+    "cmf_20d",                   # 数据升级1A: 20日主力资金流承接强度 (Chaikin Smart Money Flow = CLV * 相对量比)
+    "asym_semi_20d",             # 数据升级1B: 20日上下行已实现半方差不对称性 (Realized Semivariance Asymmetry)
+    "smart_flow_1d",             # 数据升级1C: 当日日内尾盘主力资金承接强度 (CLV * 相对量比)
+    "overnight_ret_5d",          # 数据升级1D: 5日隔夜跳空累计动量 (A股 T+1 集合竞价知情资金方向)
+    "intraday_ret_5d",           # 数据升级1E: 5日日内实体累计动量 (A股日内交易追涨/承接力度)
+    "idio_mom_20d",              # 数据升级1F: 20日截面市场残差特异动量 (剥离市场Beta后的纯Alpha动量)
+    "overnight_intraday_spread_20d",  # 20日隔夜与日内收益差波动率标准化 (分离竞价承接与日内追涨)
+    "ewm_sharpe_45d",            # 45日中周期指数加权夏普状态
 ]
 
 
@@ -163,6 +165,15 @@ def compute_raw_feature_columns(bars_df: pd.DataFrame) -> pd.DataFrame:
     # 数据升级 1F：20日截面市场残差特异动量 (剥离当日截面等权市场均值后的波动率标准化残差)
     mkt_ret_20d = df.groupby("trade_date")["ret_20d"].transform("mean")
     df["idio_mom_20d"] = (df["ret_20d"] - mkt_ret_20d) / vol_20
+
+    # 20日隔夜与日内收益差 (波动率标准化) 与 45 日指数加权夏普
+    ov_20 = df.groupby("symbol")["_overnight_1d"].transform(lambda s: s.fillna(0.0).rolling(20, min_periods=10).sum())
+    in_20 = df.groupby("symbol")["_intraday_1d"].transform(lambda s: s.fillna(0.0).rolling(20, min_periods=10).sum())
+    df["overnight_intraday_spread_20d"] = (ov_20 - in_20) / vol_20
+
+    ewm_mean = g["ret_1d_raw"].transform(lambda s: s.fillna(0.0).ewm(span=45, min_periods=10).mean())
+    ewm_std = g["ret_1d_raw"].transform(lambda s: s.fillna(0.0).ewm(span=45, min_periods=10).std().fillna(0.0)) + 1e-6
+    df["ewm_sharpe_45d"] = ewm_mean / ewm_std
     return df
 
 

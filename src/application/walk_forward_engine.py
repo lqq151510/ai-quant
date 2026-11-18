@@ -69,14 +69,21 @@ from src.domain.portfolio.stock_limits import (  # noqa: E402
 )
 from src.domain.regime.market_hmm import StickyMarketRegimeHMM  # noqa: E402
 from src.domain.rl_portfolio.a_share_env import ASharePortfolioEnv  # noqa: E402
-from src.domain.rl_portfolio.offline_iql import train_offline_iql_agent  # noqa: E402
+from src.domain.rl_portfolio.offline_iql import (  # noqa: E402
+    predict_pessimistic_iql_ensemble,
+    train_offline_iql_agent,
+)
 from src.domain.rl_portfolio.ppo_agent import (  # noqa: E402
     build_alpha_risk_prior,
     train_ppo_portfolio_agent,
 )
-from src.domain.timeseries_dl.losses import CrossSectionalICLoss  # noqa: E402
+from src.domain.timeseries_dl.losses import (  # noqa: E402
+    CrossSectionalICLoss,
+    build_exponential_time_decay_weights,
+)
 from src.domain.uncertainty.quantile_conformal import fit_and_calibrate_conformal_quantile  # noqa: E402
 
+IQL_SEEDS: Tuple[int, ...] = (42, 101, 202)
 PPO_SEEDS: Tuple[int, ...] = (42, 101, 202, 303, 404)
 
 
@@ -248,9 +255,10 @@ def _train_fold_kg_gat_and_stacker(
         adj_prior=hybrid_adj,
         in_features=n_feats,
         seq_len=seq_len,
-        d_model=48,
+        d_model=24,
         n_heads=4,
-        dropout=0.15,
+        n_layers=1,
+        dropout=0.25,
     ).to(device)
 
     # 跳过整日均无标签的训练样本，避免优化器仅因权重衰减更新参数。
@@ -261,19 +269,21 @@ def _train_fold_kg_gat_and_stacker(
         param.requires_grad = True
 
     criterion = CrossSectionalICLoss(mse_weight=0.20)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3, weight_decay=1e-4)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=8e-4, weight_decay=3e-3)
+    day_w = build_exponential_time_decay_weights(len(x_tr), half_life=320.0)[supervised_days]
 
     loader = DataLoader(
         TensorDataset(
             torch.tensor(x_tr[supervised_days], dtype=torch.float32),
             torch.tensor(y_tr[supervised_days], dtype=torch.float32),
             torch.tensor(adj_tr[supervised_days], dtype=torch.float32),
+            torch.tensor(day_w, dtype=torch.float32),
         ),
         batch_size=32,
         shuffle=True,
     )
 
-    best_val_ic = -2.0
+    best_val_skill = -2.0
     best_state = None
 
     def _infer(x_arr: np.ndarray, adj_arr: np.ndarray) -> np.ndarray:
@@ -287,21 +297,26 @@ def _train_fold_kg_gat_and_stacker(
 
     for _ in range(epochs):
         model.train()
-        for bx, by, badj in loader:
-            bx, by, badj = bx.to(device), by.to(device), badj.to(device)
+        for bx, by, badj, bw in loader:
+            bx, by, badj, bw = bx.to(device), by.to(device), badj.to(device), bw.to(device)
             optimizer.zero_grad()
             blended = 0.5 * hybrid_adj.unsqueeze(0) + 0.5 * badj
             pred = model(bx, dynamic_adj=blended)
-            loss = criterion(pred, by)
+            loss = criterion(pred, by, sample_weights=bw)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
 
         val_p = _infer(x_val, adj_val)
-        ics = [float(np.corrcoef(p, y)[0, 1]) for p, y in iter_observed_cross_sections(val_p, y_val)]
-        mean_ic = float(np.mean(ics)) if ics else -1.0
-        if mean_ic > best_val_ic:
-            best_val_ic = mean_ic
+        skills = []
+        for p, y in iter_observed_cross_sections(val_p, y_val):
+            ic = float(np.corrcoef(p, y)[0, 1])
+            ric = float(spearmanr(p, y).statistic)
+            if np.isfinite(ic) and np.isfinite(ric):
+                skills.append(0.5 * ic + 0.5 * ric)
+        mean_skill = float(np.mean(skills)) if skills else -1.0
+        if mean_skill > best_val_skill:
+            best_val_skill = mean_skill
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
 
     if best_state is not None:
@@ -311,42 +326,23 @@ def _train_fold_kg_gat_and_stacker(
     val_gnn_preds = _infer(x_val, adj_val)
     oos_gnn_preds = _infer(x_oos, adj_oos)
 
-    # Löwdin 对称正交化 GBDT + KG-GAT Stacking，并在 Purged 验证集上自适应校准方向与融合权重
+    # Purged Ridge + Löwdin GBDT + KG-GAT 三专家验证集非负收缩集成
     stacker = OrthogonalTreeGNNStacker(random_state=seed)
-    blended, oos_tree = stacker.fit_and_blend(
+    blended, _ = stacker.fit_and_blend(
         train_x=x_tr,
         train_y=y_tr,
         val_x=x_val,
         val_y=y_val,
         test_x=x_oos,
-        gnn_preds={"train_preds": tr_gnn_preds, "test_preds": oos_gnn_preds},
+        gnn_preds={
+            "train_preds": tr_gnn_preds,
+            "val_preds": val_gnn_preds,
+            "test_preds": oos_gnn_preds,
+        },
     )
-    oos_ens = blended["test_preds"]
-
-    # 在 Purged 验证集上评估 GNN 与 GBDT 的样本外泛化方向，自适应调节正交专家权重 (零测试集泄漏)
-    val_blended, val_tree = stacker.fit_and_blend(
-        train_x=x_tr,
-        train_y=y_tr,
-        val_x=x_val,
-        val_y=y_val,
-        test_x=x_val,
-        gnn_preds={"train_preds": tr_gnn_preds, "test_preds": val_gnn_preds},
-    )
-    val_ens_p = val_blended["test_preds"]
-    ens_val_ics = [
-        float(np.corrcoef(p, y)[0, 1]) for p, y in iter_observed_cross_sections(val_ens_p, y_val)
-    ]
-    mean_ens_val_ic = float(np.mean(ens_val_ics)) if ens_val_ics else 0.0
-    # 融合 A 股截面中期动量-资金流锚 (sharpe_20d + cmf_20d - ma_bias_20)
-    oos_anchor = (
-        0.45 * x_oos[:, :, -1, 5]
-        + 0.35 * x_oos[:, :, -1, 8]
-        - 0.20 * x_oos[:, :, -1, 6]
-    )
-    if mean_ens_val_ic < -0.005:
-        oos_ENS = -0.55 * oos_ens + 0.45 * oos_anchor
-    else:
-        oos_ENS = 0.75 * oos_ens + 0.25 * oos_anchor
+    oos_ens = np.vstack([
+        cross_sectional_mad_zscore(row) for row in blended["test_preds"]
+    ]).astype(np.float32)
 
     # CQR 共形分位数回归校准 (在 purged 验证集校准，在 OOS 折叠推理)
     cqr = fit_and_calibrate_conformal_quantile(
@@ -359,7 +355,7 @@ def _train_fold_kg_gat_and_stacker(
         epochs=12,
         device=device,
     )
-    return val_gnn_preds, oos_ENS, cqr.interval_width
+    return val_gnn_preds, oos_ens, cqr.interval_width
 
 
 @dataclass
@@ -520,23 +516,48 @@ def select_buffered_top_k(
     prev_weights: np.ndarray,
     top_k: int,
     buffer_mult: float = 1.6,
+    *,
+    swap_margin: float = 0.45,
+    max_drop: int | None = None,
 ) -> np.ndarray:
-    """滞回缓冲带选股算子 (No-Trade Hysteresis Buffer)：已持仓标的只要仍居 Top-M 且高于截面分位阈值即优先保留."""
+    """滞回缓冲带选股算子 (No-Trade Hysteresis Buffer)：结合 Top-M、分位下界、评分优势门槛与单期最大淘汰上限."""
     n_assets = len(scores)
     k = min(max(1, top_k), n_assets)
-    eff_mult = max(buffer_mult, 2.4 if n_assets > 6 else 1.6)
-    keep_m = min(n_assets, max(k + 1, int(np.ceil(k * eff_mult))))
+    if k >= n_assets:
+        return np.arange(n_assets, dtype=int)
+    if k > n_assets // 2:
+        keep_m = min(n_assets - 1, k + max(1, (n_assets - k) // 2))
+        q_level = max(0.10, 1.0 - (keep_m + 0.5) / n_assets)
+    else:
+        eff_mult = max(buffer_mult, 1.75 if n_assets > 6 else 1.5)
+        keep_m = min(n_assets - 1, max(k + 1, int(np.round(k * eff_mult))))
+        # 分位门槛与 keep_m 自洽，避免小截面 (如 N=4, K=2) 下中位数门槛卡死第 3 名导致缓冲带失效
+        q_level = max(0.15, 1.0 - (keep_m + 0.5) / n_assets)
     ranked_desc = np.argsort(scores)[::-1]
     top_m_set = set(ranked_desc[:keep_m].tolist())
-    # 宽截面下只要已持仓标的仍高于截面 45% 分位数且居 Top-M，即不触发换仓避免印花税损耗
-    q_hurdle = float(np.quantile(scores, 0.45 if n_assets > 6 else 0.50))
+    q_hurdle = float(np.quantile(scores, q_level))
+
+    held_indices = [int(idx) for idx in ranked_desc if prev_weights[idx] > 1e-3]
+    unheld_scores = [float(scores[idx]) for idx in ranked_desc if prev_weights[idx] <= 1e-3]
+    best_unheld = max(unheld_scores) if unheld_scores else -float("inf")
+    allowed_drops = max(1, k // 9) if max_drop is None else max(1, max_drop)
 
     retained: List[int] = []
-    for idx in ranked_desc:
+    for idx in held_indices:
         if len(retained) >= k:
             break
-        if prev_weights[idx] > 1e-3 and idx in top_m_set and scores[idx] >= q_hurdle:
-            retained.append(int(idx))
+        in_buffer = idx in top_m_set and scores[idx] >= q_hurdle
+        within_margin = (best_unheld - float(scores[idx])) < swap_margin
+        if in_buffer or within_margin:
+            retained.append(idx)
+
+    if len(held_indices) >= k and (min(k, len(held_indices)) - len(retained)) > allowed_drops:
+        min_keep = k - allowed_drops
+        for idx in held_indices:
+            if len(retained) >= min_keep:
+                break
+            if idx not in retained:
+                retained.append(idx)
 
     for idx in ranked_desc:
         if len(retained) >= k:
@@ -555,7 +576,7 @@ def apply_turnover_deadband(
     max_exposure: float | None = None,
     stock_mask: np.ndarray | None = None,
 ) -> Tuple[np.ndarray, bool]:
-    """抑制微幅换手，优先执行清仓和仓位风险限制。"""
+    """抑制微幅换手，消除淘汰标的跨期尾部残仓，并优先执行清仓和仓位风险限制。"""
     if max_exposure is not None and (not np.isfinite(max_exposure) or not 0.0 <= max_exposure <= 1.0):
         raise ValueError("max_exposure must be finite and between 0 and 1")
     if not np.any(proposed_w) or max_exposure == 0:
@@ -573,10 +594,17 @@ def apply_turnover_deadband(
             return target, bool(np.any(target) or np.any(prev_w))
         return target, True
 
-    # 当新旧持仓集合完全相同时，允许更大的免交易死区避免每期支付最低佣金与滑点
+    # 持仓集合不变时适度平滑；发生标的轮换时一次性清零被淘汰标的，仅平滑保留标的对
     same_support = np.array_equal(proposed_w > 1e-3, prev_w > 1e-3)
-    effective_blend = inertia_blend if not same_support else 0.65
-    blended = (1.0 - effective_blend) * proposed_w + effective_blend * prev_w
+    if same_support:
+        blended = 0.65 * proposed_w + 0.35 * prev_w
+    else:
+        keep_both = (proposed_w > 1e-4) & (prev_w > 1e-4)
+        blended = np.where(
+            proposed_w > 1e-4,
+            np.where(keep_both, (1.0 - inertia_blend) * proposed_w + inertia_blend * prev_w, proposed_w),
+            0.0,
+        )
     # 清除极小碎股权重并保持总敞口一致
     blended = np.where(blended >= 0.015, blended, 0.0)
     target_sum = float(np.sum(proposed_w))
@@ -584,22 +612,43 @@ def apply_turnover_deadband(
     if curr_sum > 1e-6 and target_sum > 1e-6:
         blended = blended * (target_sum / curr_sum)
 
-    risk_override = False
+    exposure_override = False
     if max_exposure is not None:
         blended_sum = float(np.sum(blended))
-        risk_override = float(np.sum(prev_w)) > max_exposure + 1e-12 or blended_sum > max_exposure + 1e-12
+        exposure_override = float(np.sum(prev_w)) > max_exposure + 1e-12 or blended_sum > max_exposure + 1e-12
         if blended_sum > max_exposure:
             blended = blended * (max_exposure / blended_sum)
+    stock_breach = False
+    limited_prev = prev_w
+    if not exposure_override and stock_mask is not None and len(proposed_w) > 6:
+        keep_micro = (
+            stock_mask
+            & (blended > 1e-4)
+            & (prev_w > 1e-4)
+            & (prev_w <= 0.0485)
+            & (np.abs(blended - prev_w) < 0.009)
+        )
+        etf_absorbers = (~stock_mask) & (blended > 1e-4)
+        if keep_micro.any() and etf_absorbers.any():
+            snapped = blended.copy()
+            snapped[keep_micro] = prev_w[keep_micro]
+            diff = float(blended.sum()) - float(snapped.sum())
+            etf_sum = float(snapped[etf_absorbers].sum())
+            if etf_sum + diff >= 1e-4 and etf_sum > 1e-6:
+                snapped[etf_absorbers] += diff * (snapped[etf_absorbers] / etf_sum)
+                blended = snapped
     if stock_mask is not None:
         blended = limit_stock_weights(np.where(blended > 1e-4, blended, 0.0), stock_mask)
         limited_prev = limit_stock_weights(prev_w, stock_mask)
-        risk_override = risk_override or bool(np.any(prev_w - limited_prev > 1e-12))
-    if risk_override:
+        stock_breach = bool(np.any(prev_w - limited_prev > 1e-12))
+    if exposure_override:
         return blended, True
 
     l1_diff = float(np.sum(np.abs(blended - prev_w)))
-    threshold = l1_deadband * (1.35 if same_support else 1.0)
+    threshold = l1_deadband
     if l1_diff < threshold:
+        if stock_breach:
+            return limited_prev, True
         return prev_w.copy(), False
     return blended, True
 
@@ -617,6 +666,52 @@ def _stock_mask_from_bars(bars: pd.DataFrame, symbols: Sequence[str]) -> np.ndar
     return ordered_kinds.eq("stock").to_numpy(dtype=bool)
 
 
+def _redistribute_under_stock_limits(
+    proposal: np.ndarray,
+    stock_mask: np.ndarray,
+    target_exposure: float,
+    *,
+    stock_cap: float = 0.045,
+    alpha: np.ndarray | None = None,
+    prev_w: np.ndarray | None = None,
+) -> np.ndarray:
+    """在严格遵守单股 5% 净值上限与 50% 持仓集中度约束下，按缓冲上限注水并支持 ETF 敞口补齐."""
+    w = np.maximum(proposal, 0.0).astype(np.float64)
+    if w.sum() <= 1e-8 or target_exposure <= 0.0:
+        return np.zeros_like(w)
+    w = w * (target_exposure / w.sum())
+    if not stock_mask.any():
+        return w
+    eff_stock_cap = min(float(stock_cap), MAX_STOCK_NAV_WEIGHT)
+    active = w > 1e-6
+    for _ in range(6):
+        over = active & stock_mask & (w > eff_stock_cap)
+        if not over.any():
+            break
+        excess = float((w[over] - eff_stock_cap).sum())
+        w[over] = eff_stock_cap
+        room = active & (~stock_mask | (w < eff_stock_cap - 1e-7))
+        if not room.any() or excess <= 1e-7:
+            break
+        w[room] += excess * (w[room] / w[room].sum())
+
+    rem = target_exposure - float(w.sum())
+    etf_idx = np.flatnonzero(~stock_mask)
+    if rem > 0.008 and alpha is not None and etf_idx.size > 0:
+        prev_etf = prev_w[etf_idx] if prev_w is not None else np.zeros(len(etf_idx), dtype=np.float64)
+        sel_etf_local = select_buffered_top_k(
+            alpha[etf_idx],
+            prev_etf,
+            min(2, len(etf_idx)),
+            swap_margin=0.55,
+            max_drop=1,
+        )
+        top_etfs = etf_idx[sel_etf_local]
+        etf_tilts = np.exp(0.30 * np.clip(alpha[top_etfs] - np.mean(alpha[top_etfs]), -1.5, 1.5))
+        w[top_etfs] += rem * (etf_tilts / np.sum(etf_tilts))
+    return limit_stock_weights(w, stock_mask)
+
+
 def _weights_from_policy_logits(
     logits: np.ndarray,
     alpha_t: np.ndarray,
@@ -624,24 +719,46 @@ def _weights_from_policy_logits(
     current_dd: float,
     hmm_cap: float,
     top_k: int,
+    *,
+    delta: np.ndarray | None = None,
+    stock_mask: np.ndarray | None = None,
+    swap_margin: float = 0.45,
+    max_drop: int | None = None,
 ) -> np.ndarray:
-    """结合策略网络动作 Logits、滞回缓冲带与 HMM/回撤门控输出 (N,) 维目标权重向量."""
+    """结合解耦后的 RL 策略残差、滞回缓冲带、个股注水重分配与 HMM/回撤门控输出 (N,) 维目标权重向量."""
     n_assets = len(alpha_t)
-    clipped = np.clip(logits, -10.0, 10.0)
-    exp_a = np.exp(clipped - np.max(clipped))
-    alloc = exp_a / np.sum(exp_a)
-    raw_cash = float(alloc[-1])
-
     k = min(top_k, n_assets)
-    # 融合样本外 Alpha 与 RL 策略网络自身输出的资产偏好 Logits 进行滞回选股
-    policy_score = 0.55 * alpha_t + 0.45 * np.tanh(clipped[:n_assets])
-    top_idx = select_buffered_top_k(policy_score, prev_w, k)
-    tilt = 1.0 + 0.35 * np.tanh(clipped[top_idx])
+
+    if delta is None:
+        policy_score = alpha_t
+        top_idx = select_buffered_top_k(policy_score, prev_w, k, swap_margin=swap_margin, max_drop=max_drop)
+        tilt = np.exp(0.25 * np.clip(alpha_t[top_idx] - np.mean(alpha_t[top_idx]), -1.5, 1.5))
+        rl_cash_adj = 0.0
+    else:
+        d_tanh = np.tanh(np.clip(delta, -5.0, 5.0))
+        d_assets = d_tanh[:n_assets] - float(np.mean(d_tanh[:n_assets]))
+        policy_score = alpha_t + 0.25 * d_assets
+        top_idx = select_buffered_top_k(policy_score, prev_w, k, swap_margin=swap_margin, max_drop=max_drop)
+        raw_tilt = alpha_t[top_idx] - np.mean(alpha_t[top_idx]) + 0.35 * d_assets[top_idx]
+        tilt = np.exp(0.28 * np.clip(raw_tilt, -1.5, 1.5))
+        stress_gate = 1.0 if (current_dd > 0.05 or hmm_cap < 0.88) else 0.20
+        rl_cash_adj = 0.05 * stress_gate * float(d_tanh[-1])
+
     asset_dist = np.zeros(n_assets, dtype=np.float64)
     asset_dist[top_idx] = tilt / np.sum(tilt)
 
-    target_cash = float(np.clip(0.40 * raw_cash + 0.45 * current_dd, 1.0 - hmm_cap, 0.35))
-    equity_exposure = float(np.clip(1.0 - target_cash, 0.0, hmm_cap))
+    is_broad = stock_mask is not None and bool(stock_mask.any())
+    cap_buf = 0.022 if is_broad else 0.060
+    eff_cap = max(0.60, hmm_cap - cap_buf) if hmm_cap > 0.65 else hmm_cap
+    dd_slope = 0.25 if is_broad else 0.42
+    dd_trig = 0.08 if is_broad else 0.055
+    base_cash = (1.0 - eff_cap) + dd_slope * max(0.0, current_dd - dd_trig) + rl_cash_adj
+    target_cash = float(np.clip(base_cash, 1.0 - eff_cap, max(0.45, 1.0 - eff_cap)))
+    equity_exposure = float(np.clip(1.0 - target_cash, 0.0, eff_cap))
+    if stock_mask is not None and stock_mask.any():
+        return _redistribute_under_stock_limits(
+            asset_dist, stock_mask, equity_exposure, alpha=alpha_t, prev_w=prev_w
+        )
     return (asset_dist * equity_exposure).astype(np.float64)
 
 
@@ -813,28 +930,44 @@ def run_walk_forward_ablation_experiment(
     if len(after_days) > 0:
         eval_cal = eval_cal.union(after_days[:1])
 
+    # 因果信号精度收缩与与持有期匹配的慢速 EMA 平滑：严格只使用当前及之前的样本外预测
+    smoothed_alpha = np.zeros_like(oos_stream.oos_alpha, dtype=np.float64)
+    ema_state = np.zeros(n_assets, dtype=np.float64)
+    ema_eta = 0.05 if n_assets > 6 else (0.14 if horizon == 5 else 0.045)
+    for idx_t in range(len(oos_stream.dates)):
+        unc_t = oos_stream.oos_uncertainty[idx_t]
+        rel_w = unc_t / (float(np.median(unc_t)) + 1e-6)
+        raw_p = oos_stream.oos_alpha[idx_t] / (1.0 + 0.20 * rel_w)
+        ema_state = raw_p if idx_t == 0 else (1.0 - ema_eta) * ema_state + ema_eta * raw_p
+        smoothed_alpha[idx_t] = cross_sectional_mad_zscore(ema_state) if n_assets > 6 else ema_state
+
+    deadband_val = 0.22 if n_assets > 6 else 0.16
+    blend_val = 0.45 if n_assets > 6 else 0.35
+    swap_margin_val = 1.15 if n_assets > 6 else 0.55
+    max_drop_val = 2 if n_assets > 6 else 1
+
     def training_env() -> ASharePortfolioEnv:
+        rl_alpha = (
+            smoothed_alpha[rl_train_idx].astype(np.float32)
+            if n_assets > 6
+            else oos_stream.oos_alpha[rl_train_idx]
+        )
         return ASharePortfolioEnv(
-            alpha_preds=oos_stream.oos_alpha[rl_train_idx],
+            alpha_preds=rl_alpha,
             vol_features=oos_stream.vol_feats[rl_train_idx],
             real_next_rets=intraday_rets,
             overnight_rets=overnight_rets,
             rebalance_interval=horizon,
+            top_k=k,
             **opening_masks,
         )
 
-    _set_seed(42)
-    iql_net = train_offline_iql_agent(training_env(), n_behavior_episodes=14, iql_epochs=30)
-    iql_net.eval()
-
-    # 因果平滑只使用当前及之前的样本外预测。
-    smoothed_alpha = np.zeros_like(oos_stream.oos_alpha, dtype=np.float64)
-    ema_eta = 0.16 if n_assets > 6 else 0.35
-    deadband_val = 0.34 if n_assets > 6 else 0.16
-    blend_val = 0.55 if n_assets > 6 else 0.40
-    for idx_t in range(len(oos_stream.dates)):
-        raw_p = oos_stream.oos_alpha[idx_t] - 0.08 * oos_stream.oos_uncertainty[idx_t]
-        smoothed_alpha[idx_t] = raw_p if idx_t == 0 else (1.0 - ema_eta) * smoothed_alpha[idx_t - 1] + ema_eta * raw_p
+    iql_nets = []
+    for iql_seed in IQL_SEEDS:
+        _set_seed(iql_seed)
+        net = train_offline_iql_agent(training_env(), n_behavior_episodes=24, iql_epochs=40)
+        net.eval()
+        iql_nets.append(net)
 
     decision_indices = {oos_stream.dates[i].date(): i for i in eval_idx[::horizon]}
     eq_signals = {pd.Timestamp(day): {sym: 1.0 / n_assets for sym in symbols} for day in decision_indices}
@@ -865,15 +998,23 @@ def run_walk_forward_ablation_experiment(
 
     def stage2_proposal(i: int, held: np.ndarray, _state: CloseState) -> np.ndarray:
         alpha = smoothed_alpha[i]
-        selected = select_buffered_top_k(alpha, held, k)
-        tilts = np.exp(0.35 * (alpha[selected] - np.max(alpha[selected])))
-        proposal = np.zeros(n_assets, dtype=np.float64)
-        proposal[selected] = tilts / np.sum(tilts)
-        return proposal
+        selected = select_buffered_top_k(alpha, held, k, swap_margin=swap_margin_val, max_drop=max_drop_val)
+        tilts = np.exp(0.25 * np.clip(alpha[selected] - np.mean(alpha[selected]), -1.5, 1.5))
+        w_sat = np.zeros(n_assets, dtype=np.float64)
+        w_sat[selected] = tilts / np.sum(tilts)
+        if n_assets <= 6:
+            w_eq = np.full(n_assets, 1.0 / n_assets, dtype=np.float64)
+            active_ratio = float(np.clip(0.55 + 0.25 * np.tanh(float(np.std(alpha))), 0.55, 0.80))
+            return (1.0 - active_ratio) * w_eq + active_ratio * w_sat
+        if stock_mask.any():
+            return _redistribute_under_stock_limits(
+                w_sat, stock_mask, target_exposure=0.975, alpha=alpha, prev_w=held
+            )
+        return w_sat
 
     def hrp_proposal(i: int, held: np.ndarray, state: CloseState) -> np.ndarray:
         alpha = smoothed_alpha[i]
-        selected = select_buffered_top_k(alpha, held, k)
+        selected = select_buffered_top_k(alpha, held, k, swap_margin=swap_margin_val, max_drop=max_drop_val)
         history = panel.close_returns.loc[:pd.Timestamp(state.date)].tail(60).to_numpy()
         history = history[np.isfinite(history[:, selected]).all(axis=1)]
         if len(history) >= 10:
@@ -882,8 +1023,13 @@ def run_walk_forward_ablation_experiment(
             )
         else:
             proposal = np.zeros(n_assets, dtype=np.float64)
-            proposal[selected] = 1.0 / k
-        return proposal * oos_stream.oos_hmm_exposure[i]
+            proposal[selected] = 1.0 / len(selected)
+        hmm_cap = oos_stream.oos_hmm_exposure[i]
+        cap_buf = 0.022 if stock_mask.any() else 0.060
+        eff_cap = max(0.60, hmm_cap - cap_buf) if hmm_cap > 0.65 else hmm_cap
+        if stock_mask.any():
+            return _redistribute_under_stock_limits(proposal, stock_mask, eff_cap, alpha=alpha, prev_w=held)
+        return proposal * eff_cap
 
     def rl_policy(
         predict_delta: Callable[[torch.Tensor], torch.Tensor] | None = None,
@@ -894,12 +1040,14 @@ def run_walk_forward_ablation_experiment(
                 alpha, oos_stream.vol_feats[i], held, [state.cash / state.nav, state.drawdown]
             ]).astype(np.float32)
             logits = build_alpha_risk_prior(obs, n_assets, top_k=k).squeeze(0).numpy()
+            delta_arr = None
             if predict_delta is not None:
                 with torch.no_grad():
-                    delta = predict_delta(torch.tensor(obs).unsqueeze(0)).squeeze(0).numpy()
-                logits = logits + 0.85 * delta
+                    delta_arr = predict_delta(torch.tensor(obs).unsqueeze(0)).squeeze(0).numpy()
+                logits = logits + 0.85 * delta_arr
             return _weights_from_policy_logits(
-                logits, alpha, held, state.drawdown, oos_stream.oos_hmm_exposure[i], k
+                logits, alpha, held, state.drawdown, oos_stream.oos_hmm_exposure[i], k,
+                delta=delta_arr, stock_mask=stock_mask, swap_margin=swap_margin_val, max_drop=max_drop_val,
             )
 
         return close_policy(propose, enforce_hmm_cap=True)
@@ -908,7 +1056,7 @@ def run_walk_forward_ablation_experiment(
         "wf_stage2_bitemporal_kg_gat": close_policy(stage2_proposal),
         "wf_hrp_cqr_hmm": close_policy(hrp_proposal, enforce_hmm_cap=True),
         "rl_rule_prior_only": rl_policy(),
-        "rl_offline_iql": rl_policy(iql_net.policy_net),
+        "rl_offline_iql": rl_policy(lambda obs_t, nets=iql_nets: predict_pessimistic_iql_ensemble(nets, obs_t)),
     }
     ppo_seed_policies = {}
     for seed_val in ppo_seeds:
@@ -1008,6 +1156,9 @@ def run_walk_forward_ablation_experiment(
                 },
             },
             "rl_rebalance_interval_sessions": horizon,
+            "primary_allocator": "rl_offline_iql",
+            "iql_ensemble_seeds": list(IQL_SEEDS),
+            "online_ppo_role": "secondary_high_variance_benchmark",
             "purge_gap_enforced": True,
             "walk_forward_folds": oos_stream.fold_boundaries,
             "oos_rl_train_sessions": int(len(rl_train_idx)),
@@ -1063,7 +1214,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     actions_df = frames["actions"]
 
     n_unique_assets = bars_df["symbol"].nunique()
-    top_k = args.top_k if args.top_k > 0 else (2 if n_unique_assets <= 6 else 5)
+    has_stocks = bool(bars_df["kind"].eq("stock").any()) if "kind" in bars_df else False
+    if args.top_k > 0:
+        top_k = args.top_k
+    elif n_unique_assets <= 6:
+        top_k = 2
+    elif has_stocks and n_unique_assets >= 15:
+        top_k = 22
+    else:
+        top_k = 5
 
     # 仅在快照未提供关系表时使用手工先验。时点过滤后为空的表代表没有可用关系。
     if "edges" in frames:

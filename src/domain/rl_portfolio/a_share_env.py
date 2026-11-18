@@ -29,13 +29,17 @@ class ASharePortfolioEnv(gym.Env):
         *,
         overnight_rets: np.ndarray | None = None,
         rebalance_interval: int = 3,
+        top_k: int = 3,
         buy_allowed: np.ndarray | None = None,
         sell_allowed: np.ndarray | None = None,
     ) -> None:
         super().__init__()
         if isinstance(rebalance_interval, bool) or not isinstance(rebalance_interval, int) or rebalance_interval < 1:
             raise ValueError("rebalance_interval must be a positive integer")
+        if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k < 1:
+            raise ValueError("top_k must be a positive integer")
         self.rebalance_interval = rebalance_interval
+        self.top_k = top_k
         if overnight_rets is None:
             assert len(alpha_preds) == len(real_next_rets)
         else:
@@ -143,7 +147,7 @@ class ASharePortfolioEnv(gym.Env):
         # 对齐波段调仓周期：结合 Alpha 预测、RL 策略动作 Logits 与当前持仓惯性缓冲选股
         rebalance = False
         if self.step_idx % self.rebalance_interval == 0 or np.sum(self.weights) < 1e-5:
-            k_pick = min(3, self.n_assets)
+            k_pick = min(max(1, self.top_k), self.n_assets)
             composite_score = (
                 0.60 * self.alpha_preds[self.step_idx]
                 + 0.40 * np.tanh(logits[:self.n_assets])

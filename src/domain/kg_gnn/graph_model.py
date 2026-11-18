@@ -33,18 +33,20 @@ def build_hybrid_kg_adjacency(
                 float(row["weight"]),
             )
 
-    # 在训练集上计算 Lag-1 领先滞后互相关 (资产 j 在 t-1 的收益对资产 i 在 t 的收益预测性)
-    # train_x_seq shape: (T_train, N, L, F), 第 0 维特征为 ret_1d
+    # 在训练集上计算无窗口重叠的领先滞后互相关 (第 0 维特征为 ret_3d，使用 Lag-3 消除重叠窗口伪相关)
+    # train_x_seq shape: (T_train, N, L, F)
     daily_ret = train_x_seq[:, :, -1, 0]  # (T_train, N)
     adj_implicit = np.zeros((n, n), dtype=np.float32)
     if len(daily_ret) > 10:
-        r_prev = daily_ret[:-1]  # t-1
-        r_curr = daily_ret[1:]   # t
+        lag = 3 if len(daily_ret) > 12 else 1
+        r_prev = daily_ret[:-lag]
+        r_curr = daily_ret[lag:]
         r_prev_norm = (r_prev - r_prev.mean(0)) / (r_prev.std(0) + 1e-8)
         r_curr_norm = (r_curr - r_curr.mean(0)) / (r_curr.std(0) + 1e-8)
-        # lead_lag[i, j] 表示 j(t-1) -> i(t) 的相关性
+        # lead_lag[i, j] 表示 j(t-lag) -> i(t) 的相关性，并以有限样本显著性阈值收缩滤除噪边
         lead_lag = (r_curr_norm.T @ r_prev_norm) / len(r_curr)
-        adj_implicit = np.clip(lead_lag, 0.0, 1.0)
+        thresh = 1.65 / np.sqrt(max(len(r_curr), 1))
+        adj_implicit = np.clip(lead_lag - thresh, 0.0, 1.0).astype(np.float32)
 
     hybrid_adj = (1.0 - implicit_weight) * adj_explicit + implicit_weight * adj_implicit
     # 移除自环：自身时序信息由残差主干 h_self 保留，GAT 专注于聚合纯外部邻居 (j != i) 的溢出信号
@@ -129,6 +131,7 @@ class SpatioTemporalKGAlphaModel(nn.Module):
         seq_len: int = 20,
         d_model: int = 64,
         n_heads: int = 4,
+        n_layers: int = 2,
         dropout: float = 0.2,
     ) -> None:
         super().__init__()
@@ -141,6 +144,7 @@ class SpatioTemporalKGAlphaModel(nn.Module):
             seq_len=seq_len,
             d_model=d_model,
             n_heads=n_heads,
+            n_layers=n_layers,
             dropout=dropout,
         )
         self.temporal_encoder = FinancialPatchTSTEncoder(
@@ -148,10 +152,11 @@ class SpatioTemporalKGAlphaModel(nn.Module):
             seq_len=seq_len,
             d_model=d_model,
             n_heads=n_heads,
+            n_layers=n_layers,
             dropout=dropout,
         )
         self.kg_proj = nn.Sequential(
-            nn.Linear(d_model, d_model // 2),
+            nn.Linear(d_model * 2, d_model // 2),
             nn.GELU(),
             nn.Linear(d_model // 2, 1),
         )
@@ -176,5 +181,6 @@ class SpatioTemporalKGAlphaModel(nn.Module):
             h_kg = torch.bmm(norm_dyn, h_intra)
         else:
             h_kg = torch.matmul(self.norm_adj.unsqueeze(0), h_intra)
-        kg_alpha = self.kg_proj(h_kg).squeeze(-1)
+        kg_feat = torch.cat([h_kg, h_kg - h_intra], dim=-1)
+        kg_alpha = self.kg_proj(kg_feat).squeeze(-1)
         return base_alpha + self.kg_scale * kg_alpha
