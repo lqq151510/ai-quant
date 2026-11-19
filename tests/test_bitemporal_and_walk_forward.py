@@ -357,6 +357,14 @@ class BitemporalAndWalkForwardTests(unittest.TestCase):
             with (
                 patch.object(walk_forward_engine, "simulate", side_effect=capture_policy),
                 patch.object(walk_forward_engine, "generate_walk_forward_oos_stream", side_effect=capture_stream),
+                patch.object(
+                    walk_forward_engine, "train_offline_iql_agent",
+                    side_effect=AssertionError("insufficient validation must skip IQL training"),
+                ),
+                patch.object(
+                    walk_forward_engine, "predict_pessimistic_iql_ensemble",
+                    side_effect=AssertionError("rule-only fallback must not predict a residual"),
+                ),
                 patch.object(torch.backends.mps, "is_available", wraps(torch.backends.mps.is_available)(lambda: False)),
             ):
                 report = run_walk_forward_ablation_experiment(
@@ -419,6 +427,11 @@ class BitemporalAndWalkForwardTests(unittest.TestCase):
         ppo_summary = normal_ledgers["rl_ppo_5seed_summary"]
         self.assertEqual(len(ppo_summary["per_seed"]), 2)
         self.assertLess(ppo_summary["max_reconciliation_error"], 1e-6)
+
+        self.assertEqual(res["protocol"]["iql_residual_scale"], 0.0)
+        self.assertEqual(res["protocol"]["iql_ledger_gate"]["status"], "insufficient_validation")
+        for ledgers in res["share_ledger_ablation"].values():
+            self.assertEqual(ledgers["rl_offline_iql"], ledgers["rl_rule_prior_only"])
 
     def test_causal_preclose_feature_pipeline_eliminates_split_jump_distortion(self) -> None:
         dates = pd.bdate_range("2024-01-02", periods=30)
@@ -539,6 +552,33 @@ class BitemporalAndWalkForwardTests(unittest.TestCase):
         self.assertAlmostEqual(float(out[16:].sum()), 0.94 - 16 * 0.044, places=6)
         self.assertEqual(float(out[16]), 0.0)
         self.assertEqual(float(out[19]), 0.0)
+
+    def test_iql_validation_excludes_labels_ending_on_the_boundary(self) -> None:
+        horizon = 20
+        calendar = pd.bdate_range("2023-01-02", periods=181)
+        dates, label_ends = calendar[:-21], calendar[21:]
+        fit, validation = walk_forward_engine._iql_validation_split(dates, label_ends, horizon)
+        boundary = dates[validation.start]
+        self.assertEqual(len(dates[validation]), 2 * horizon)
+        self.assertLess(label_ends[fit.stop - 1], boundary)
+        self.assertEqual(label_ends[fit.stop], boundary)
+        self.assertIsNone(walk_forward_engine._iql_validation_split(dates[:-4], label_ends[:-4], horizon))
+
+    def test_iql_gate_requires_strict_net_gain_without_worse_drawdown(self) -> None:
+        prior = {"final_nav": 100_000.0, "max_drawdown": 0.13}
+        for nav, drawdown, passed in (
+            (100_001.0, 0.13, True),
+            (100_000.0, 0.10, False),
+            (99_999.0, 0.12, False),
+            (100_001.0, 0.14, False),
+            (float("nan"), 0.13, False),
+            (100_001.0, float("inf"), False),
+        ):
+            with self.subTest(nav=nav, drawdown=drawdown):
+                self.assertEqual(
+                    walk_forward_engine._iql_improves_ledger(prior, {"final_nav": nav, "max_drawdown": drawdown}),
+                    passed,
+                )
 
     def test_pessimistic_iql_ensemble_shrinks_on_disagreement_and_semimdp_ppo_converges(self) -> None:
         def _const_net(bias_vec: list[float]) -> IQLNetworks:

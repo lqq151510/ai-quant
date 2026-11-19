@@ -126,6 +126,36 @@ def _normalize_observed_labels(returns: pd.Series) -> np.ndarray:
     return normalized
 
 
+def _iql_validation_split(
+    dates: Sequence[pd.Timestamp], label_end_dates: Sequence[pd.Timestamp], horizon: int,
+) -> tuple[slice, slice] | None:
+    """留出最后四分之一做账本验证，剔除训练段中跨越验证边界的标签。"""
+    validation_start = int(len(dates) * 0.75)
+    if len(dates) - validation_start < 2 * horizon:
+        return None
+    fit_candidates = pd.DataFrame({
+        "date": dates[:validation_start], "label_end": label_end_dates[:validation_start],
+    })
+    fit_rows = purge_training(fit_candidates, dates[validation_start]).index
+    if len(fit_rows) < 20 or not fit_rows.equals(pd.RangeIndex(len(fit_rows))):
+        return None
+    return slice(0, len(fit_rows)), slice(validation_start, len(dates))
+
+
+def _iql_improves_ledger(prior: Mapping[str, float], learned: Mapping[str, float]) -> bool:
+    prior_nav, learned_nav = prior["final_nav"], learned["final_nav"]
+    prior_drawdown, learned_drawdown = prior["max_drawdown"], learned["max_drawdown"]
+    return bool(
+        np.isfinite([prior_nav, learned_nav, prior_drawdown, learned_drawdown]).all()
+        and learned_nav > prior_nav
+        and learned_drawdown <= prior_drawdown
+    )
+
+
+class _InvalidPolicyResidual(ValueError):
+    """The actor did not return one finite residual per asset plus cash."""
+
+
 def build_open_to_open_panel(
     bars_df: pd.DataFrame,
     calendar_dates: Sequence[pd.Timestamp],
@@ -946,40 +976,35 @@ def run_walk_forward_ablation_experiment(
     swap_margin_val = 1.15 if n_assets > 6 else 0.55
     max_drop_val = 2 if n_assets > 6 else 1
 
-    def training_env() -> ASharePortfolioEnv:
+    def training_env(local: slice = slice(None)) -> ASharePortfolioEnv:
         rl_alpha = (
             smoothed_alpha[rl_train_idx].astype(np.float32)
             if n_assets > 6
             else oos_stream.oos_alpha[rl_train_idx]
         )
         return ASharePortfolioEnv(
-            alpha_preds=rl_alpha,
-            vol_features=oos_stream.vol_feats[rl_train_idx],
-            real_next_rets=intraday_rets,
-            overnight_rets=overnight_rets,
+            alpha_preds=rl_alpha[local],
+            vol_features=oos_stream.vol_feats[rl_train_idx][local],
+            real_next_rets=intraday_rets[local],
+            overnight_rets=overnight_rets[local],
             rebalance_interval=horizon,
             top_k=k,
-            **opening_masks,
+            **{name: values[local] for name, values in opening_masks.items()},
         )
-
-    iql_nets = []
-    for iql_seed in IQL_SEEDS:
-        _set_seed(iql_seed)
-        net = train_offline_iql_agent(training_env(), n_behavior_episodes=24, iql_epochs=40)
-        net.eval()
-        iql_nets.append(net)
 
     decision_indices = {oos_stream.dates[i].date(): i for i in eval_idx[::horizon]}
     eq_signals = {pd.Timestamp(day): {sym: 1.0 / n_assets for sym in symbols} for day in decision_indices}
 
     def close_policy(
         propose: Callable[[int, np.ndarray, CloseState], np.ndarray],
-        *, enforce_hmm_cap: bool = False,
+        *,
+        enforce_hmm_cap: bool = False,
+        decisions: Mapping[date, int] = decision_indices,
     ) -> Callable[[CloseState], Mapping[str, float] | None]:
         limit_individual_stocks = enforce_hmm_cap and bool(stock_mask.any())
 
         def on_close(state: CloseState) -> Mapping[str, float] | None:
-            i = decision_indices.get(state.date)
+            i = decisions.get(state.date)
             if i is None:
                 return None
             held = np.array([state.weights.get(sym, 0.0) for sym in symbols])
@@ -1033,6 +1058,8 @@ def run_walk_forward_ablation_experiment(
 
     def rl_policy(
         predict_delta: Callable[[torch.Tensor], torch.Tensor] | None = None,
+        *,
+        decisions: Mapping[date, int] = decision_indices,
     ) -> Callable[[CloseState], Mapping[str, float] | None]:
         def propose(i: int, held: np.ndarray, state: CloseState) -> np.ndarray:
             alpha = smoothed_alpha[i]
@@ -1044,19 +1071,88 @@ def run_walk_forward_ablation_experiment(
             if predict_delta is not None:
                 with torch.no_grad():
                     delta_arr = predict_delta(torch.tensor(obs).unsqueeze(0)).squeeze(0).numpy()
+                if delta_arr.shape != logits.shape or not np.isfinite(delta_arr).all():
+                    raise _InvalidPolicyResidual("policy residual must match the finite asset-and-cash logits")
                 logits = logits + 0.85 * delta_arr
             return _weights_from_policy_logits(
                 logits, alpha, held, state.drawdown, oos_stream.oos_hmm_exposure[i], k,
                 delta=delta_arr, stock_mask=stock_mask, swap_margin=swap_margin_val, max_drop=max_drop_val,
             )
 
-        return close_policy(propose, enforce_hmm_cap=True)
+        return close_policy(propose, enforce_hmm_cap=True, decisions=decisions)
+
+    base_cost = Costs()
+    cost_scenarios = (("normal", base_cost), ("double_friction", base_cost.stressed()))
+    prior_policy = rl_policy()
+    iql_policy = prior_policy
+    iql_scale = 0.0
+    iql_gate: dict[str, Any] = {
+        "status": "insufficient_validation",
+        "fit": None,
+        "validation": None,
+        "cost_scenarios": {},
+    }
+    training_dates = [oos_stream.dates[i] for i in rl_train_idx]
+    training_label_ends = [oos_stream.label_end_dates[i] for i in rl_train_idx]
+    iql_split = _iql_validation_split(training_dates, training_label_ends, horizon)
+    if iql_split is not None:
+        fit_local, val_local = iql_split
+        val_indices = rl_train_idx[val_local]
+        val_cal = full_cal[train_positions[val_local.start]:train_positions[-1] + 2]
+        val_decisions = {oos_stream.dates[i].date(): i for i in val_indices[::horizon]}
+        iql_gate["fit"] = {
+            "signal_dates": [str(training_dates[0].date()), str(training_dates[fit_local.stop - 1].date())],
+            "latest_label_end": str(training_label_ends[fit_local.stop - 1].date()),
+            "signal_sessions": fit_local.stop,
+        }
+        iql_gate["validation"] = {
+            "ledger_dates": [str(val_cal[0].date()), str(val_cal[-1].date())],
+            "ledger_sessions": len(val_cal),
+            "signal_sessions": len(val_indices),
+            "scheduled_decisions": len(val_decisions),
+        }
+
+        iql_nets = []
+        for iql_seed in IQL_SEEDS:
+            _set_seed(iql_seed)
+            net = train_offline_iql_agent(training_env(fit_local), n_behavior_episodes=24, iql_epochs=40)
+            net.eval()
+            iql_nets.append(net)
+
+        def predict_iql_delta(obs: torch.Tensor) -> torch.Tensor:
+            return predict_pessimistic_iql_ensemble(iql_nets, obs)
+
+        val_prior = rl_policy(decisions=val_decisions)
+        val_iql = rl_policy(predict_iql_delta, decisions=val_decisions)
+        iql_gate["status"] = "failed_ledger_gate"
+        for cost_name, cost_cfg in cost_scenarios:
+            prior_metrics, _ = _simulate_strategy_on_share_ledger(
+                {}, bars_df, val_cal, actions_df,
+                initial_cash=initial_cash, cost=cost_cfg, close_policy=val_prior,
+            )
+            learned_metrics = None
+            try:
+                learned_metrics, _ = _simulate_strategy_on_share_ledger(
+                    {}, bars_df, val_cal, actions_df,
+                    initial_cash=initial_cash, cost=cost_cfg, close_policy=val_iql,
+                )
+            except _InvalidPolicyResidual:
+                iql_gate["status"] = "invalid_residual"
+            iql_gate["cost_scenarios"][cost_name] = {
+                "rule_prior": prior_metrics,
+                "learned": learned_metrics,
+                "passed": learned_metrics is not None and _iql_improves_ledger(prior_metrics, learned_metrics),
+            }
+        if all(scenario["passed"] for scenario in iql_gate["cost_scenarios"].values()):
+            iql_gate["status"] = "passed"
+            iql_policy = rl_policy(predict_iql_delta)
+            iql_scale = 1.0
 
     policies = {
         "wf_stage2_bitemporal_kg_gat": close_policy(stage2_proposal),
         "wf_hrp_cqr_hmm": close_policy(hrp_proposal, enforce_hmm_cap=True),
-        "rl_rule_prior_only": rl_policy(),
-        "rl_offline_iql": rl_policy(lambda obs_t, nets=iql_nets: predict_pessimistic_iql_ensemble(nets, obs_t)),
+        "rl_rule_prior_only": prior_policy,
+        "rl_offline_iql": iql_policy,
     }
     ppo_seed_policies = {}
     for seed_val in ppo_seeds:
@@ -1066,11 +1162,10 @@ def run_walk_forward_ablation_experiment(
         ppo_seed_policies[seed_val] = rl_policy(lambda obs, actor=model: actor(obs)[0])
 
     # 各摩擦情景从独立账本的收盘状态出发，成交或拒单都会影响后续信号。
-    base_cost = Costs()
     ledger_reports: Dict[str, Dict[str, Any]] = {}
     normal_daily_returns: Dict[str, pd.Series] = {}
 
-    for cost_name, cost_cfg in (("normal", base_cost), ("double_friction", base_cost.stressed())):
+    for cost_name, cost_cfg in cost_scenarios:
         ledger_reports[cost_name] = {}
         for strat_name, policy in {"equal_weight": None, **policies}.items():
             m, r_series = _simulate_strategy_on_share_ledger(
@@ -1156,8 +1251,10 @@ def run_walk_forward_ablation_experiment(
                 },
             },
             "rl_rebalance_interval_sessions": horizon,
-            "primary_allocator": "rl_offline_iql",
+            "primary_allocator": "rl_offline_iql" if iql_scale else "rl_rule_prior_only",
             "iql_ensemble_seeds": list(IQL_SEEDS),
+            "iql_residual_scale": iql_scale,
+            "iql_ledger_gate": iql_gate,
             "online_ppo_role": "secondary_high_variance_benchmark",
             "purge_gap_enforced": True,
             "walk_forward_folds": oos_stream.fold_boundaries,
