@@ -56,7 +56,7 @@ uv run --frozen --extra models python -m quant_research.cli demo --out artifacts
 
 数据探测、真实快照审计、分研究线运行与前向证据接口，见[研究工具使用说明](research_v1/README.md)。
 
-计划于 2026-11-16 至 11-20 开展的本地前向对照使用独立模拟账本。截至 2026-11-20，11-16 至 11-18 已生成开盘、收盘与每日账本；11-19 没有当日记录，按协议记为采样缺口，不补造；11-20 待收盘。仓库已收录[冻结协议](artifacts/news-filter-forward-20261116/protocol.md)、[运行说明](artifacts/news-filter-forward-20261116/runbook.md)及源码。安装上面的研究环境后，在仓库根目录运行离线测试：
+2026-11-16 至 11-20 的本地前向对照使用独立模拟账本。11-16 至 11-18 有可对账的开盘、收盘和每日记录，11-19 至 11-20 缺少可结算记录。仓库已收录[冻结协议](artifacts/news-filter-forward-20261116/protocol.md)、[运行说明](artifacts/news-filter-forward-20261116/runbook.md)及源码。安装上面的研究环境后，在仓库根目录运行离线测试：
 
 ```bash
 PYTHONPATH=research_v1 research_v1/.venv/bin/python -m unittest discover \
@@ -64,6 +64,8 @@ PYTHONPATH=research_v1 research_v1/.venv/bin/python -m unittest discover \
 ```
 
 新检出可运行合成情景；需要本地候选、新闻、原始行情或特征归档的回放测试会报告缺失并跳过。时点校验、盘口回放、收盘对账和周报代码都用于虚拟资金对照。
+
+[模拟策略阶段收尾](research_v1/PAPER_STRATEGY_20261120.md)记录了加仓、同盘口净额、开盘确认及同金额对照的结果，以及 11 月 23–27 日前向计划和当前证据缺口。
 
 ## 数据与研究边界
 

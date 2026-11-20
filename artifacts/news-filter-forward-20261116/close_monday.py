@@ -145,7 +145,7 @@ def read_raw_provenance(mark, directory):
     return raw, None
 
 
-def verify_mark_provenance(mark, directory, require_raw, day=DAY, symbol=None, previous_close=None):
+def verify_mark_provenance(mark, directory, require_raw, day=DAY, symbol=None, previous_close=None, *, prior_day=None):
     if not require_raw and 'raw_file' not in mark and 'raw_sha256' not in mark:
         return None
     raw, error = read_raw_provenance(mark, directory)
@@ -170,7 +170,7 @@ def verify_mark_provenance(mark, directory, require_raw, day=DAY, symbol=None, p
                     or urlsplit(mark['source_url']).hostname != 'web.ifzq.gtimg.cn'
                     or not SECURITY_CODE.fullmatch(symbol)):
                 return 'close_market_source_unverified'
-            prior_day = prior_session(parsed_day)
+            prior_day = prior_day or prior_session(parsed_day)
             if previous_close is None:
                 secondary = mark.get('secondary_check')
                 if (mark.get('previous_close_basis') != 'dual_source_recovery'

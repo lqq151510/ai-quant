@@ -26,10 +26,26 @@ def get_bars(symbol, adjusted, raw, days):
     (raw / f'{symbol}-{int(adjusted)}.json').write_bytes(payload)
     data = json.loads(payload)['data'][code]
     rows = data.get('qfqday' if adjusted else 'day')
+    validate_bars(rows, days)
+    return data, rows, url
+
+
+def validate_bars(rows, days):
     if not rows or [row[0] for row in rows] != days:
         raise ValueError('missing contiguous six sessions')
     if any(Decimal(r[2]) <= 0 or Decimal(r[5]) <= 0 for r in rows):
         raise ValueError('missing positive close or volume')
+
+
+def get_recent_bars(symbol, adjusted, raw, days):
+    code = symbol[-2:].lower() + symbol[:6]
+    url = ('https://proxy.finance.qq.com/ifzqgtimg/appstock/app/fqkline/get'
+           f'?param={code},day,,,12,' + ('qfq' if adjusted else ''))
+    payload = download(url)
+    (raw / f'{symbol}-{int(adjusted)}-recent.json').write_bytes(payload)
+    data = json.loads(payload)['data'][code]
+    rows = (data.get('qfqday' if adjusted else 'day') or [])[-len(days):]
+    validate_bars(rows, days)
     return data, rows, url
 
 
@@ -46,11 +62,20 @@ def download(url):
                 raise
 
 
-def inspect(item, raw, days):
+def inspect(item, raw, days, *, prefer_recent_bars=False):
     symbol, kind = item
     result = dict(symbol=symbol, kind=kind)
+
+    def read_bars(adjusted):
+        if prefer_recent_bars:
+            try:
+                return get_recent_bars(symbol, adjusted, raw, days)
+            except (OSError, ValueError, KeyError, TypeError, ArithmeticError, IndexError):
+                pass
+        return get_bars(symbol, adjusted, raw, days)
+
     try:
-        unadjusted, rows, raw_url = get_bars(symbol, False, raw, days)
+        unadjusted, rows, raw_url = read_bars(False)
         code = symbol[-2:].lower() + symbol[:6]
         quote = unadjusted['qt'][code]
         if quote[2] != symbol[:6]:
@@ -58,8 +83,8 @@ def inspect(item, raw, days):
         result['name'] = quote[1]
         if result['name'].upper().startswith(('ST', '*ST', 'SST', 'S*ST')) or '退' in result['name']:
             return {**result, 'status': 'risk_warning_or_delisting'}
-        adjusted, adjusted_rows, adjusted_url = get_bars(symbol, True, raw, days)
-        if rows[-1][2] != adjusted_rows[-1][2]:
+        _, adjusted_rows, adjusted_url = read_bars(True)
+        if Decimal(rows[-1][2]) != Decimal(adjusted_rows[-1][2]):
             raise ValueError('adjusted close does not anchor to the latest raw close')
         tick = Decimal('.001' if kind == 'etf' else '.01')
         close = Decimal(rows[-1][2])

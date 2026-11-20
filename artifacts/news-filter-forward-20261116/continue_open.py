@@ -68,9 +68,9 @@ def sale(day, symbol, units, book, previous_close):
                           transfer_fee=str(fees[2]))
 
 
-def held_prior_close(symbol, previous, prepared_references):
+def held_prior_close(symbol, previous, prepared_references, *, groups=GROUPS):
     references = list(prepared_references.get(symbol, ()))
-    for group in GROUPS:
+    for group in groups:
         account = previous[group]
         if symbol in account['positions'] and symbol not in (account.get('valuation_gap') or {}):
             mark = account.get('close_prices', {}).get(symbol)
@@ -83,7 +83,7 @@ def held_prior_close(symbol, previous, prepared_references):
     return str(values.pop()) if len(values) == 1 else None
 
 
-def run_day(day, previous, prepared, captured, snapshot):
+def run_day(day, previous, prepared, captured, snapshot, *, prior_day=None, groups=GROUPS):
     accounts = {}
     candidates = prepared['candidates'] if prepared else []
     books, unavailable = captured['selected'], captured['unavailable']
@@ -95,10 +95,10 @@ def run_day(day, previous, prepared, captured, snapshot):
     for row in prepared.get('reviewed', ()) if prepared else ():
         if 'previous_close' in row and row.get('sources'):
             prepared_references.setdefault(row['symbol'], []).append(row['previous_close'])
-    held = {symbol for group in GROUPS for symbol in previous[group]['positions']}
+    held = {symbol for group in groups for symbol in previous[group]['positions']}
     for symbol in held:
-        prior_closes[symbol] = held_prior_close(symbol, previous, prepared_references)
-    for group in GROUPS:
+        prior_closes[symbol] = held_prior_close(symbol, previous, prepared_references, groups=groups)
+    for group in groups:
         prior = previous[group]
         cash, positions = Decimal(prior['cash']), dict(prior['positions'])
         fills, decisions = [], []
@@ -141,7 +141,7 @@ def run_day(day, previous, prepared, captured, snapshot):
                         reason, evaluation, fill, premium = decide(
                             row, book, snapshot['batches'], snapshot['errors'], day=day,
                             news_captured_at=snapshot.get('news_archive', {}).get('captured_at'),
-                            prior_day=day-timedelta(days=1), budget=budget)
+                            prior_day=prior_day or day-timedelta(days=1), budget=budget)
                 except (ValueError, KeyError, TypeError, ArithmeticError):
                     reason = 'invalid_quote'
                 if evaluation is not None:
@@ -170,7 +170,7 @@ def run_day(day, previous, prepared, captured, snapshot):
                                                    for row in prepared['reviewed'])
             ),
             'candidate_symbols': [row['symbol'] for row in candidates],
-            'expected_sell_symbols': {group: sorted(previous[group]['positions']) for group in GROUPS},
+            'expected_sell_symbols': {group: sorted(previous[group]['positions']) for group in groups},
             'planned_symbols': sorted(held | {row['symbol'] for row in candidates}),
             'received_symbols': sorted({s for a in captured.get('attempts', []) for s in a.get('books', {})}),
             'fresh_symbols': quote_coverage['fresh_symbols'] if quote_coverage is not None

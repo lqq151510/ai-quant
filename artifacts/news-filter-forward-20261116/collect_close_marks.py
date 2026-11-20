@@ -111,9 +111,9 @@ def prior_session(day):
     return SESSIONS[SESSIONS.index(day) - 1]
 
 
-def collect(out, symbol, previous_close, *, day=DAY):
+def collect(out, symbol, previous_close, *, day=DAY, prior_day=None):
     code = symbol[-2:].lower() + symbol[:6]
-    previous_day = prior_session(day)
+    previous_day = prior_day or prior_session(day)
     tencent_url = ("https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
                    f"?param={code},day,{previous_day},{day},12,")
     sina_url = ("https://quotes.sina.cn/cn/api/jsonp_v2.php/var%20_a=/"

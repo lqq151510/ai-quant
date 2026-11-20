@@ -157,7 +157,7 @@ def write_json(path, value):
     os.replace(temporary, path)
 
 
-def main():
+def main(argv=None, *, allowed_days=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('--date', type=date.fromisoformat, required=True)
     parser.add_argument('--out', type=Path, required=True)
@@ -165,7 +165,7 @@ def main():
     parser.add_argument('--require-513100-iopv', action='store_true')
     parser.add_argument('--require-limits', action='append', default=[])
     parser.add_argument('symbols', nargs='+')
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     symbols = {}
     for symbol in args.symbols:
         if not re.fullmatch(r'[0-9]{6}[.](SH|SZ)', symbol):
@@ -174,7 +174,9 @@ def main():
     now = datetime.now(CST)
     start = datetime.combine(args.date, wall_time(9, 45), CST)
     end = datetime.combine(args.date, wall_time(9, 50), CST)
-    if not args.probe and (not date(2026, 11, 16) <= args.date <= date(2026, 11, 20) or now < start):
+    allowed = (date(2026, 11, 16) <= args.date <= date(2026, 11, 20)
+               if allowed_days is None else args.date in allowed_days)
+    if not args.probe and (not allowed or now < start):
         parser.error('outside frozen study capture window')
     checkpoint = args.out / 'capture-progress.json'
     identity = {'mode': 'diagnostic' if args.probe else 'forward', 'date': str(args.date),
