@@ -1,0 +1,166 @@
+{
+  "archived_at": "2026-11-20T13:57:44+08:00",
+  "note": "REJECTED.md 引用文件的仓库内副本；字节与原件一致，哈希按原件计算。含本机绝对路径的报告原样保留，以便核对哈希，路径映射见 source_path。",
+  "entries": [
+    {
+      "candidate_ids": [
+        "R-01"
+      ],
+      "source_path": "research_v1/artifacts/momentum-study-20261111-a/report.md",
+      "evidence_path": "research_v1/evidence/momentum-study-20261111-a/report.md",
+      "sha256": "ca20f40c387d10e572bc8d4ab915fc2452ffdcf5effbeeb53e688e9a0112697a",
+      "bytes": 3979,
+      "source_mtime": "2026-11-11T07:46:11.640737+08:00",
+      "contains_machine_paths": false
+    },
+    {
+      "candidate_ids": [
+        "R-02",
+        "R-13"
+      ],
+      "source_path": "research_v1/artifacts/control-study-20261114/report.md",
+      "evidence_path": "research_v1/evidence/control-study-20261114/report.md",
+      "sha256": "3205e7c54b7cca2160f3a175f6ca00448bd3a594ff4cb6c465d35387623fab69",
+      "bytes": 14339,
+      "source_mtime": "2026-11-14T20:02:59.947107+08:00",
+      "contains_machine_paths": false
+    },
+    {
+      "candidate_ids": [
+        "R-02",
+        "R-04",
+        "R-13"
+      ],
+      "source_path": "research_v1/artifacts/control-study-20261114-h20/report.md",
+      "evidence_path": "research_v1/evidence/control-study-20261114-h20/report.md",
+      "sha256": "f0325b3b2486a8a00dd1450bb7b456a94322ab4c992647e19e9028690bff1cce",
+      "bytes": 15067,
+      "source_mtime": "2026-11-14T20:05:16.808068+08:00",
+      "contains_machine_paths": false
+    },
+    {
+      "candidate_ids": [
+        "R-02",
+        "R-13"
+      ],
+      "source_path": "research_v1/artifacts/control-study-20261114-h60/report.md",
+      "evidence_path": "research_v1/evidence/control-study-20261114-h60/report.md",
+      "sha256": "1ff6da04d4337fdcda726ca93d8245382bc2a247ce0f8ba36fcc0a2216faa9ac",
+      "bytes": 14612,
+      "source_mtime": "2026-11-14T20:05:27.239524+08:00",
+      "contains_machine_paths": false
+    },
+    {
+      "candidate_ids": [
+        "R-03"
+      ],
+      "source_path": "research_v1/artifacts/reversal-5-sessions-20261114/report.md",
+      "evidence_path": "research_v1/evidence/reversal-5-sessions-20261114/report.md",
+      "sha256": "db44b13d4ad0a1579492657ba387458cc56200da66b8ac6c101ef1094ee950b3",
+      "bytes": 16752,
+      "source_mtime": "2026-11-14T20:07:09.859354+08:00",
+      "contains_machine_paths": false
+    },
+    {
+      "candidate_ids": [
+        "R-05",
+        "R-06"
+      ],
+      "source_path": "research_v1/artifacts/reversal-60-exposure-20261114/report.md",
+      "evidence_path": "research_v1/evidence/reversal-60-exposure-20261114/report.md",
+      "sha256": "5e7bae03bc5c1218e49f34c16659366b712619207f072c4c193bafd5a2e8d9da",
+      "bytes": 18473,
+      "source_mtime": "2026-11-14T20:10:43.392156+08:00",
+      "contains_machine_paths": false
+    },
+    {
+      "candidate_ids": [
+        "R-05"
+      ],
+      "source_path": "research_v1/artifacts/reversal-60-subwindows-20261114/report.md",
+      "evidence_path": "research_v1/evidence/reversal-60-subwindows-20261114/report.md",
+      "sha256": "07542a415524d40b8a652a5a48439404ef626a12b4bc3a6f0040bf0e980aecc9",
+      "bytes": 16742,
+      "source_mtime": "2026-11-14T20:12:49.828571+08:00",
+      "contains_machine_paths": false
+    },
+    {
+      "candidate_ids": [
+        "R-07"
+      ],
+      "source_path": "artifacts/net-edge-study-20261111/report.md",
+      "evidence_path": "research_v1/evidence/net-edge-study-20261111/report.md",
+      "sha256": "7b91cae39edde2bf14a43c1fdbfa3e4f60755725a8a7e4606d8601ac860bbaee",
+      "bytes": 4056,
+      "source_mtime": "2026-11-11T15:38:17.411808+08:00",
+      "contains_machine_paths": true
+    },
+    {
+      "candidate_ids": [
+        "R-08"
+      ],
+      "source_path": "artifacts/entry-timing-study-20261111/report.md",
+      "evidence_path": "research_v1/evidence/entry-timing-study-20261111/report.md",
+      "sha256": "8e05d02ca679965bf444f9efad659bc4c38ca517d98cec80e3a610881cb7c703",
+      "bytes": 5288,
+      "source_mtime": "2026-11-11T15:22:07.324002+08:00",
+      "contains_machine_paths": true
+    },
+    {
+      "candidate_ids": [
+        "R-09",
+        "R-10"
+      ],
+      "source_path": "artifacts/rl-self-review-20261111/report.md",
+      "evidence_path": "research_v1/evidence/rl-self-review-20261111/report.md",
+      "sha256": "427586250c0e3f01ba6676bf9b164a8950605792add3acf81fb4ef5761a3bb5f",
+      "bytes": 7912,
+      "source_mtime": "2026-11-11T13:26:42.120244+08:00",
+      "contains_machine_paths": true
+    },
+    {
+      "candidate_ids": [
+        "R-11"
+      ],
+      "source_path": "research_v1/artifacts/momentum-rl-overlay-20261111-e/report.md",
+      "evidence_path": "research_v1/evidence/momentum-rl-overlay-20261111-e/report.md",
+      "sha256": "ccd9bda61bc90cf8802b02f0e866d1230379b4302e36d749ba6ebcb3387eb914",
+      "bytes": 3531,
+      "source_mtime": "2026-11-11T12:47:23.109991+08:00",
+      "contains_machine_paths": false
+    },
+    {
+      "candidate_ids": [
+        "R-12"
+      ],
+      "source_path": "artifacts/etf-deadband-study-20261110/results/report.json",
+      "evidence_path": "research_v1/evidence/etf-deadband-study-20261110/results/report.json",
+      "sha256": "a8fa1fdc656416a130404210224ebc68f4d107962b79c7a81ed4b124c34ec183",
+      "bytes": 48880,
+      "source_mtime": "2026-11-10T22:44:51.196778+08:00",
+      "contains_machine_paths": false
+    },
+    {
+      "candidate_ids": [
+        "R-14"
+      ],
+      "source_path": "research_v1/artifacts/etf-vol-target-12pct-20261114/report.md",
+      "evidence_path": "research_v1/evidence/etf-vol-target-12pct-20261114/report.md",
+      "sha256": "3b64189fbc5a30ca8ec57b4cc5188b0d584afb97aa55c45bef21cd94c1e80a2d",
+      "bytes": 5561,
+      "source_mtime": "2026-11-14T20:22:31.695147+08:00",
+      "contains_machine_paths": false
+    },
+    {
+      "candidate_ids": [
+        "R-15"
+      ],
+      "source_path": "research_v1/artifacts/vol-target-20261114/results.json",
+      "evidence_path": "research_v1/evidence/vol-target-20261114/results.json",
+      "sha256": "6c7ff806942e2ccf0f9f6191b8e101c3bdfab096fa9bdfff82783b378eb91dea",
+      "bytes": 10097,
+      "source_mtime": "2026-11-14T20:24:38.328536+08:00",
+      "contains_machine_paths": false
+    }
+  ]
+}

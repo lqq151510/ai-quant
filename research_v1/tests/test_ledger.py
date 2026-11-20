@@ -3,7 +3,7 @@ from datetime import date
 import pandas as pd
 import pytest
 
-from quant_research.ledger import Costs, LedgerError, simulate
+from quant_research.ledger import Costs, LedgerError, prepare_bars_index, simulate
 
 
 FRIDAY = "2023-08-25"
@@ -190,3 +190,17 @@ def test_etf_fractional_split_truncates_to_integer_shares_while_stock_rejects():
     stock_actions = actions.assign(symbol=STOCK)
     with pytest.raises(LedgerError, match="fractional units"):
         simulate(stock_bars, [FRIDAY, MONDAY], {FRIDAY: {STOCK: 1.0}}, stock_actions, initial_cash=10_000, cost=Costs(0, 0, 0))
+
+
+def test_reused_bars_index_matches_default_simulation():
+    bars = pd.DataFrame([
+        bar(FRIDAY),
+        bar(MONDAY, open=10.5, high=10.8, low=10.4, close=10.6, preclose=10.0),
+        bar(TUESDAY, open=9.9, high=10.1, low=9.7, close=10.0, preclose=10.6),
+    ])
+    targets = {FRIDAY: {ETF: 1.0}, MONDAY: {}, TUESDAY: {ETF: 0.5}}
+    plain = simulate(bars, [FRIDAY, MONDAY, TUESDAY], targets, initial_cash=10_000)
+    indexed = simulate(bars, [FRIDAY, MONDAY, TUESDAY], targets, initial_cash=10_000,
+                       bars_index=prepare_bars_index(bars))
+    for field in ("equity", "orders", "positions", "cash_events"):
+        pd.testing.assert_frame_equal(getattr(plain, field), getattr(indexed, field))

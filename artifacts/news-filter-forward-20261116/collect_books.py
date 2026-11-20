@@ -49,12 +49,17 @@ def capture(url, timeout=8):
         raise TimeoutError('market request exceeded its deadline')
 
     req = Request(url, headers={'Referer': 'https://finance.sina.com.cn/', 'User-Agent': 'Mozilla/5.0'})
+    started = time.monotonic()
     previous_handler = signal.signal(signal.SIGALRM, expire)
     try:
         # The socket timeout alone restarts as each portion of the response arrives.
         signal.setitimer(signal.ITIMER_REAL, timeout)
         with urlopen(req, timeout=timeout) as reply:
             payload = reply.read(2_000_001)
+            if time.monotonic() - started > timeout:
+                # Some builds retry a blocked read internally, so a trickled body can
+                # finish after the alarm without the handler firing. Reject it here.
+                raise TimeoutError('market request exceeded its deadline')
             if len(payload) > 2_000_000:
                 raise ValueError('market payload too large')
             if reply.length not in (0, None):

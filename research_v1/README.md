@@ -107,6 +107,8 @@ uv run --frozen --extra models python -m quant_research.cli evidence examples/ev
 
 原始来源、请求参数、采集时间、文件哈希与失败都保留；快照和运行目录禁止覆盖。重新运行要用新目录，重复读取相同快照会先校验哈希。移除本子项目即可撤销新增实现；保留其 artifacts 便于审计，不需要更改原型和原数据。
 
+`evidence/` 归档 `REJECTED.md` 引用的摘要报告，`MANIFEST.json` 记录原件路径与 SHA-256；`evidence/build_manifest.py --check` 可复核，`tests/test_rejected_evidence.py` 防止链接或哈希漂移。
+
 最终工程演示见 `artifacts/demo-final-20261107/report.html`。该目录的 `source/` 保存实际运行时源码副本，`run_manifest.json` 记录其指纹、环境与依赖锁指纹；后续修改源码不会覆盖既有运行版本。`artifacts/verification-20261107.json` 保存最后一次测试、真实闸门与账本核验结果。
 
 以上 `artifacts/` 路径是本地验收记录，不随公开仓库分发。克隆仓库后可用 `demo` 命令重新生成工程报告；真实来源需自行采集，并重新进行数据准入检查。`examples/evidence.json` 为虚构工程样例，不是真实新闻。

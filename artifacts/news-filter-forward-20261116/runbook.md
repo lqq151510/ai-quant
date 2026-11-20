@@ -42,6 +42,8 @@
     PYTHONPATH=research_v1 research_v1/.venv/bin/python artifacts/news-filter-forward-20261116/exit_scenarios.py
     PYTHONPATH=research_v1 research_v1/.venv/bin/python -m unittest discover -s artifacts/news-filter-forward-20261116 -p 'test_*.py'
 
+收盘后可在项目根目录运行 `python3 tools/quality_gate.py`，一次复核三套测试、证据归档哈希和前向窗口缺日。它只读本地记录，不采集行情；缺日只告警，`--strict-forward` 会升级为失败。
+
 每日按冻结规则记录订单和收盘估值，保存 YYYY-MM-DD/daily.json。文件顶层字段 date、baseline、filtered。每组字段 fills、cash、positions、close_prices、nav；positions 为代码到整数股数或份额的映射，close_prices 为代码到价格字符串的映射。fills 每笔含 symbol、units、side、price、commission、stamp_tax、transfer_fee、fees、cash_delta，金额用十进制字符串。保留拒单、来源和新闻决策的其他字段。公司行动须附来源，可用 corporate_actions 记录盘后现金或份额变化；若公司行动必须先于交易处理，先按冻结方案核实并人工对账，不按盘后顺序强行记账。估值缺失时 nav 填 null，并附 valuation_gap。真实账本应与演练文件分开。
 
 每日和周五用完整、按日期排序的账本运行：

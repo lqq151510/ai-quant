@@ -14,7 +14,7 @@ from pathlib import Path
 import pandas as pd
 
 from .baseline import build_targets, market_close_returns
-from .ledger import LOT_SIZE, Costs, _fill_value, _money, simulate
+from .ledger import LOT_SIZE, Costs, _fill_value, _money, prepare_bars_index, simulate
 from .momentum_study import END, load_market
 from .protocol import ETF_SYMBOLS, HOLDOUT_START, VALIDATION_START
 from .risk import summarize
@@ -127,6 +127,7 @@ def run_study(snapshot: Path, output: Path, signals: tuple[str, ...] = DEFAULT_S
     if days.empty or days[-1].date() != END:
         raise ValueError('the predeclared 2023–2024 window must be complete')
     bars, actions = frames['bars'], frames['actions']
+    bars_index = prepare_bars_index(bars)
     returns = market_close_returns(bars, actions, calendar)
     cohort = dict.fromkeys(days, ETF_SYMBOLS)
     built = build_targets(days, cohort, returns, 'etf', horizon, calendar_monthly=calendar_monthly)
@@ -174,7 +175,8 @@ def run_study(snapshot: Path, output: Path, signals: tuple[str, ...] = DEFAULT_S
     no_friction_returns = {}
     for name, schedule in target_sets.items():
         for capital in CAPITALS:
-            result = simulate(bars, days, schedule, actions, initial_cash=capital, cost=no_friction)
+            result = simulate(bars, days, schedule, actions, initial_cash=capital, cost=no_friction,
+                              bars_index=bars_index)
             no_friction_returns[name, capital] = float(result.equity.iloc[-1]['nav'] / capital - 1)
     for label, cost in (('normal', costs), ('double_friction', costs.stressed())):
         fees_by_symbol.append({'cost_case': label, 'commission_rate': cost.commission_rate,
@@ -184,7 +186,8 @@ def run_study(snapshot: Path, output: Path, signals: tuple[str, ...] = DEFAULT_S
         for name in signals:
             targets = target_sets[name]
             for capital in CAPITALS:
-                result = simulate(bars, days, targets, actions, initial_cash=capital, cost=cost)
+                result = simulate(bars, days, targets, actions, initial_cash=capital, cost=cost,
+                                  bars_index=bars_index)
                 nav, log = result.equity, result.orders
                 discrepancy = (nav['nav'] - nav['cash'] - nav['market_value'] - nav['receivable']).abs().max()
                 if (discrepancy > 1e-6 or nav['cash'].min() < 0

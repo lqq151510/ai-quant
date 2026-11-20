@@ -189,7 +189,10 @@ def _prepare_bars(bars: pd.DataFrame) -> pd.DataFrame:
     if "preclose" in bars:
         columns.append("preclose")
     data = bars.loc[:, columns].copy()
-    data["date"] = data["date"].map(_date)
+    if pd.api.types.is_datetime64_any_dtype(data["date"]):
+        data["date"] = data["date"].dt.date
+    else:
+        data["date"] = data["date"].map(_date)
     if data["symbol"].isna().any() or data["symbol"].eq("").any():
         raise LedgerError("bars have missing symbols")
     if not data["kind"].isin(("stock", "etf")).all():
@@ -201,8 +204,17 @@ def _prepare_bars(bars: pd.DataFrame) -> pd.DataFrame:
     if data["tradable"].isna().any() or not data["tradable"].isin((True, False)).all():
         raise LedgerError("bars require an explicit tradable flag")
     for column in set(columns).difference(("date", "symbol", "kind", "tradable")):
-        data[column] = pd.to_numeric(data[column], errors="raise").astype(float)
+        if data[column].dtype != "float64":
+            data[column] = pd.to_numeric(data[column], errors="raise").astype(float)
     return data
+
+
+def prepare_bars_index(bars: pd.DataFrame) -> dict[date, dict[str, object]]:
+    """Validate one bar table and index its rows by session for repeated simulations."""
+    index: dict[date, dict[str, object]] = {}
+    for row in _prepare_bars(bars).itertuples(index=False):
+        index.setdefault(row.date, {})[row.symbol] = row
+    return index
 
 
 def _prepare_targets(
@@ -394,6 +406,7 @@ def simulate(
     initial_cash: float,
     cost: Costs = Costs(),
     close_policy: Callable[[CloseState], Mapping[str, float] | None] | None = None,
+    bars_index: Mapping[date, Mapping[str, object]] | None = None,
 ) -> BacktestResult:
     """Simulate opening target weights on a supplied exchange calendar.
 
@@ -404,6 +417,8 @@ def simulate(
     liquidity. Limits, explicit halts, and absent prices can prevent fills.
     Stock ETF trading is the secondary market case only. Dividends are credited
     at the supplied cash per share, on the first session on or after payment.
+    A ``bars_index`` built by :func:`prepare_bars_index` may be reused across
+    runs on the same bars; the table is validated once instead of per run.
     """
     if not _positive(initial_cash) or _money(initial_cash) == 0:
         raise LedgerError("initial cash must be finite and positive to the cent")
@@ -413,7 +428,7 @@ def simulate(
     if close_policy is not None and targets:
         raise LedgerError("close policy cannot be combined with static execution targets")
     execution = _prepare_targets(targets, set(days))
-    groups = _prepare_bars(bars).groupby("date", sort=False)
+    rows_by_day = prepare_bars_index(bars) if bars_index is None else bars_index
     event_data = _prepare_actions(actions, days)
     ex_events, record_events = defaultdict(list), defaultdict(list)
     for event in event_data:
@@ -427,9 +442,7 @@ def simulate(
     cash = peak = last_nav = _money(initial_cash)
 
     for i, day in enumerate(days):
-        rows = {}
-        if day in groups.indices:
-            rows = {row.symbol: row for row in groups.get_group(day).itertuples(index=False)}
+        rows = rows_by_day.get(day, {})
         for symbol, position in positions.items():
             if position.quantity and (symbol not in rows or not _positive(rows[symbol].close)):
                 raise LedgerError(f"missing valuation for held {symbol} on {day}")

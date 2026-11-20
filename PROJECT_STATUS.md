@@ -2,6 +2,17 @@
 
 检查时间：2026-11-14，北京时间。数据与实验检查的代码基准：`15aed9053a5f3320d56d2f9151007f07f0fb5bc5`；本文也记录了该基准之后的新闻归档 `legacy` 覆盖修复。本文是当日的本机检查记录，不会随行情、自动化或后续代码变动自动更新。
 
+## 2026-11-20 增量复核
+
+11-14 的检查记录原样保留；本节只记 11-20 的增量。
+
+- **质量门**：新增 `tools/quality_gate.py`，一次运行研究线 108 项、原型 90 项（30 个子测试）、前向 138 项测试，校验证据归档哈希；本机快照存在时追加 ETF 数据审计，并核对 README 测试数与实测。11-20 运行结果全部通过；前向窗口缺 11-19 当日记录，11-20 待收盘。
+- **证据入库**：`research_v1/evidence/` 归档 `REJECTED.md` 引用的 14 份摘要文件；`MANIFEST.json` 记录原件路径、字节数与 SHA-256，新增 `tests/test_rejected_evidence.py` 校验哈希与链接，新检出无需本地 `artifacts/` 即可复核 15 条候选。
+- **回测性能**：`ledger.simulate` 改为一次性构建按日行情索引，去掉每日 `groupby.get_group` 的重复扫描；第二轮把校验后的索引在 54 次模拟间复用，并改用向量化日期转换。同一 ETF 审计快照下，`capital_scale` 默认三信号 × 六档本金 × 两档费用（54 次账本）由 8.3 秒降至冷启动 1.3 秒、三次中位约 0.8 秒（约 7–10 倍）；`python3 tools/bench_capital_scale.py` 可复现计时；两轮改动后 `equity.csv` 与 `orders.csv` 均逐字节一致，`report.json` 除源码哈希外全部字段一致。
+- **前向时限**：`collect_books.capture` 在读取完成后复核实际耗时，避免 macOS 上慢响应被内部重试后仍当作按时完成；`test_capture_deadline` 恢复通过。
+- **复现口径**：5 日对照归档由显式信号集生成；当前默认 `equal_weight_hold` 是首次买入后持有，直接重跑 500,000 元正常费用等权为 +9.05%，不能与归档的 +9.55% 直接比较。用 `--signals momentum reverse equal_weight csi300_hold` 重跑后，四组收益与回撤均与归档一致；命令见 `research_v1/evidence/README.md`。
+- **并行改动**：工作区中 `src/` 与 `tests/` 的 7 个未提交文件来自原型线的并行工作，本次没有修改或提交。
+
 ## 当前状态与边界
 
 - 项目已有独立研究账本、数据审计、基准对照、部分模型和新闻前向模拟工具；尚无通过验收的真实市场盈利策略。
@@ -70,6 +81,9 @@ cd ..
 PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -m pytest -q -p no:cacheprovider tests
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=research_v1 research_v1/.venv/bin/python \
   -m unittest discover -s artifacts/news-filter-forward-20261116 -p 'test_*.py'
+
+# 或一次运行全部门禁（研究线、原型、前向、证据归档与前向记录审计）。
+python3 tools/quality_gate.py
 ```
 
 2026-11-14 的结果：研究线 104 项通过；原型 72 项、19 个子测试通过，另有两条 NumPy 警告；新闻归档修复后前向模块 138 项通过。该验证未接入真实盘口或模拟账户，也未重新训练模型。
