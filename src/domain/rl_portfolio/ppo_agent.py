@@ -1,11 +1,29 @@
 """领域层 Stage 3 进阶：基于 PPO (Proximal Policy Optimization) + GAE 的 A股动态仓位管理智能体."""
 
-from typing import Dict, List, Tuple
+from typing import TYPE_CHECKING, Dict, List, Tuple
 import numpy as np
 import torch
 import torch.nn as nn
 
-from src.domain.rl_portfolio.a_share_env import ASharePortfolioEnv
+if TYPE_CHECKING:
+    # 环境反过来调用本模块的超额现金，运行时不能在这里导入，否则循环依赖。
+    from src.domain.rl_portfolio.a_share_env import ASharePortfolioEnv
+
+# 动作均值 = 风险先验 + 该系数 × 网络残差。样本外必须使用同一系数。
+PPO_PRIOR_RESIDUAL_SCALE = 0.35
+# 现金先验与账本回撤现金。波动和残差只通过超额 logit 另加现金，回撤不重复计入。
+CASH_LOGIT_NORMAL = -0.35
+DRAWDOWN_LOGIT_COEF = 8.0
+DRAWDOWN_LOGIT_START = 0.05
+VOL_LOGIT_COEF = 0.35
+DRAWDOWN_CASH_COEF = 0.50
+
+
+def excess_cash_from_policy_logit(cash_logit: float, current_dd: float) -> float:
+    """超额 logit 换成额外现金。回撤现金仍只走账本的 0.50 系数。"""
+    drawdown_logit = DRAWDOWN_LOGIT_COEF * max(0.0, float(current_dd) - DRAWDOWN_LOGIT_START)
+    excess_logit = max(0.0, float(cash_logit) - CASH_LOGIT_NORMAL - drawdown_logit)
+    return excess_logit * (DRAWDOWN_CASH_COEF / DRAWDOWN_LOGIT_COEF)
 
 
 def build_alpha_risk_prior(obs: np.ndarray, n_assets: int, top_k: int = 3) -> torch.Tensor:
@@ -37,7 +55,11 @@ def build_alpha_risk_prior(obs: np.ndarray, n_assets: int, top_k: int = 3) -> to
 
     # 动态现金防守水位：常态下保持高权益仓位避免现金拖累，仅在回撤 (>5%) 或高波动时抬升现金先验
     mean_vol = float(np.mean(vols))
-    cash_logit = -0.35 + 8.0 * max(0.0, current_dd - 0.05) + 0.35 * max(0.0, mean_vol)
+    cash_logit = (
+        CASH_LOGIT_NORMAL
+        + DRAWDOWN_LOGIT_COEF * max(0.0, current_dd - DRAWDOWN_LOGIT_START)
+        + VOL_LOGIT_COEF * max(0.0, mean_vol)
+    )
     prior = np.concatenate([masked_alpha.astype(np.float32), np.array([cash_logit], dtype=np.float32)])
     return torch.tensor(prior, dtype=torch.float32).unsqueeze(0)
 
@@ -94,7 +116,7 @@ def compute_gae(
 
 
 def train_ppo_portfolio_agent(
-    train_env: ASharePortfolioEnv,
+    train_env: "ASharePortfolioEnv",
     rollout_episodes: int = 30,
     ppo_epochs: int = 4,
     clip_eps: float = 0.20,
@@ -122,7 +144,7 @@ def train_ppo_portfolio_agent(
             prior_t = build_alpha_risk_prior(obs, n_assets, top_k=top_k)
             with torch.no_grad():
                 mean_delta, val = model(obs_t)
-                mean = mean_delta * 0.35 + prior_t
+                mean = mean_delta * PPO_PRIOR_RESIDUAL_SCALE + prior_t
                 std = torch.exp(model.log_std)
                 dist = torch.distributions.Normal(mean, std)
                 act = dist.sample()
@@ -155,7 +177,7 @@ def train_ppo_portfolio_agent(
         # 3. 多轮 PPO Clipped Surrogate + 残差信任域 L2 锚定更新
         for _ in range(ppo_epochs):
             mean_delta, values_pred = model(batch_obs)
-            mean = mean_delta * 0.35 + batch_priors
+            mean = mean_delta * PPO_PRIOR_RESIDUAL_SCALE + batch_priors
             std = torch.exp(model.log_std)
             dist = torch.distributions.Normal(mean, std)
 
@@ -179,7 +201,7 @@ def train_ppo_portfolio_agent(
 
 def evaluate_ppo_agent(
     model: PPOPortfolioActorCritic,
-    test_env: ASharePortfolioEnv,
+    test_env: "ASharePortfolioEnv",
 ) -> Dict[str, np.ndarray | float]:
     """在样本外测试集上评估 PPO 智能体，并返回最后一天的实盘目标仓位分配."""
     model.eval()
@@ -194,7 +216,7 @@ def evaluate_ppo_agent(
             obs_t = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
             prior_t = build_alpha_risk_prior(obs, test_env.n_assets, top_k=top_k)
             mean_delta, _ = model(obs_t)
-            act = (mean_delta * 0.35 + prior_t).squeeze(0).numpy()
+            act = (mean_delta * PPO_PRIOR_RESIDUAL_SCALE + prior_t).squeeze(0).numpy()
 
             # 计算对应 softmax 权重供实盘计划单展示
             logits = np.clip(act, -10.0, 10.0)

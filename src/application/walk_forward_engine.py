@@ -74,7 +74,10 @@ from src.domain.rl_portfolio.offline_iql import (  # noqa: E402
     train_offline_iql_agent,
 )
 from src.domain.rl_portfolio.ppo_agent import (  # noqa: E402
+    DRAWDOWN_CASH_COEF,
+    PPO_PRIOR_RESIDUAL_SCALE,
     build_alpha_risk_prior,
+    excess_cash_from_policy_logit,
     train_ppo_portfolio_agent,
 )
 from src.domain.timeseries_dl.losses import (  # noqa: E402
@@ -112,7 +115,7 @@ class OpenToOpenPanelDataset:
     x_seq: np.ndarray            # (T, N, L, F_total)
     y_open_ret_h: np.ndarray     # (T, N) 从 t+1 开盘至 t+h+1 开盘的含分红折算真实持有收益率
     y_alpha_z: np.ndarray        # (T, N) 截面 MAD Z-Score 标准化后的超额收益标签
-    vol_feats: np.ndarray        # (T, N) 截面波动率特征
+    vol_feats: np.ndarray        # (T, N) 截至当日的 20 日已实现波动，相对过去 120 日的因果 z 分数
     dynamic_adj: np.ndarray      # (T, N, N) 双时点 Bitemporal 显式邻接矩阵序列
     close_returns: pd.DataFrame  # 完整交易日历上的已实现收盘收益，仅供风控输入
 
@@ -124,6 +127,15 @@ def _normalize_observed_labels(returns: pd.Series) -> np.ndarray:
     if observed.any():
         normalized[observed] = cross_sectional_mad_zscore(values[observed])
     return normalized
+
+
+def _causal_realized_vol_zscore(close_returns: pd.DataFrame) -> pd.DataFrame:
+    """把已实现波动变成只使用当日及以前数据的 z 分数。横截面标准化会把市场波动抹成 0。"""
+    realized = close_returns.rolling(20, min_periods=10).std()
+    center = realized.rolling(120, min_periods=40).median()
+    scale = (realized - center).abs().rolling(120, min_periods=40).median()
+    zscore = (realized - center) / (1.4826 * scale + 1e-6)
+    return zscore.clip(-3.0, 3.0)
 
 
 def _iql_validation_split(
@@ -219,6 +231,15 @@ def build_open_to_open_panel(
     n_valid = len(valid_dates)
     f_base = len(all_feat_cols)
     base_cube = feat_df[all_feat_cols].to_numpy(dtype=np.float32).reshape(n_valid, n_assets, f_base)
+    realized_vol = _causal_realized_vol_zscore(close_returns)
+    realized_vol.index = pd.DatetimeIndex(realized_vol.index).normalize()
+    vol_mat = np.nan_to_num(
+        realized_vol.reindex(
+            index=pd.DatetimeIndex(pd.to_datetime(valid_dates)).normalize(),
+            columns=symbols,
+        ).to_numpy(dtype=np.float64),
+        nan=0.0,
+    )
     full_cube = np.concatenate([base_cube, ev_feats_all], axis=-1)  # (T_valid, N, f_base + 4)
     f_total = full_cube.shape[-1]
 
@@ -236,7 +257,7 @@ def build_open_to_open_panel(
         out_label_ends.append(pd.Timestamp(label_end_series[t]))
         y_open_list.append(y_open_cube[t])
         y_alpha_list.append(y_alpha_cube[t])
-        vol_list.append(base_cube[t, :, 7])  # vol_ratio_5_20 截面波动指标
+        vol_list.append(vol_mat[t])
         adj_list.append(dyn_adj_all[t])
 
     return OpenToOpenPanelDataset(
@@ -541,6 +562,13 @@ def generate_walk_forward_oos_stream(
     )
 
 
+def policy_rebalance_thresholds(n_assets: int) -> tuple[float, float, float, int]:
+    """账本调仓阈值，顺序是换手死区、惯性混合、换仓优势、单期最多淘汰。宽池与窄池各一套。"""
+    if n_assets > 6:
+        return 0.22, 0.45, 1.15, 2
+    return 0.16, 0.35, 0.55, 1
+
+
 def select_buffered_top_k(
     scores: np.ndarray,
     prev_weights: np.ndarray,
@@ -750,42 +778,37 @@ def _weights_from_policy_logits(
     hmm_cap: float,
     top_k: int,
     *,
-    delta: np.ndarray | None = None,
     stock_mask: np.ndarray | None = None,
     swap_margin: float = 0.45,
     max_drop: int | None = None,
 ) -> np.ndarray:
-    """结合解耦后的 RL 策略残差、滞回缓冲带、个股注水重分配与 HMM/回撤门控输出 (N,) 维目标权重向量."""
+    """按训练环境的同一动作解释输出目标权重，再套上 HMM 敞口和个股上限."""
     n_assets = len(alpha_t)
-    k = min(top_k, n_assets)
-
-    if delta is None:
-        policy_score = alpha_t
-        top_idx = select_buffered_top_k(policy_score, prev_w, k, swap_margin=swap_margin, max_drop=max_drop)
-        tilt = np.exp(0.25 * np.clip(alpha_t[top_idx] - np.mean(alpha_t[top_idx]), -1.5, 1.5))
-        rl_cash_adj = 0.0
-    else:
-        d_tanh = np.tanh(np.clip(delta, -5.0, 5.0))
-        d_assets = d_tanh[:n_assets] - float(np.mean(d_tanh[:n_assets]))
-        policy_score = alpha_t + 0.25 * d_assets
-        top_idx = select_buffered_top_k(policy_score, prev_w, k, swap_margin=swap_margin, max_drop=max_drop)
-        raw_tilt = alpha_t[top_idx] - np.mean(alpha_t[top_idx]) + 0.35 * d_assets[top_idx]
-        tilt = np.exp(0.28 * np.clip(raw_tilt, -1.5, 1.5))
-        stress_gate = 1.0 if (current_dd > 0.05 or hmm_cap < 0.88) else 0.20
-        rl_cash_adj = 0.05 * stress_gate * float(d_tanh[-1])
-
-    asset_dist = np.zeros(n_assets, dtype=np.float64)
-    asset_dist[top_idx] = tilt / np.sum(tilt)
-
-    is_broad = stock_mask is not None and bool(stock_mask.any())
+    action = np.asarray(logits, dtype=np.float64)
+    if action.shape != (n_assets + 1,) or not np.isfinite(action).all():
+        raise ValueError("policy logits must be a finite vector of asset scores plus cash")
+    asset_logits = np.clip(action[:n_assets], -10.0, 10.0)
+    cash_logit = float(np.clip(action[-1], -10.0, 10.0))
+    held = (prev_w > 1e-3).astype(np.float64)
+    policy_score = 0.60 * alpha_t + 0.40 * np.tanh(asset_logits) + 0.35 * held
+    top_idx = select_buffered_top_k(
+        policy_score, prev_w, min(top_k, n_assets), swap_margin=swap_margin, max_drop=max_drop,
+    )
+    full_logits = np.concatenate([asset_logits, [cash_logit]])
+    shifted = np.exp(full_logits - np.max(full_logits))
+    raw_cash = float(shifted[-1] / np.sum(shifted))
+    excess_cash = excess_cash_from_policy_logit(cash_logit, current_dd)
+    base_cash = float(np.clip(
+        raw_cash + DRAWDOWN_CASH_COEF * max(0.0, current_dd) + excess_cash, 0.05, 0.40,
+    ))
+    is_broad = stock_mask is not None and bool(np.any(stock_mask))
     cap_buf = 0.022 if is_broad else 0.060
     eff_cap = max(0.60, hmm_cap - cap_buf) if hmm_cap > 0.65 else hmm_cap
-    dd_slope = 0.25 if is_broad else 0.42
-    dd_trig = 0.08 if is_broad else 0.055
-    base_cash = (1.0 - eff_cap) + dd_slope * max(0.0, current_dd - dd_trig) + rl_cash_adj
-    target_cash = float(np.clip(base_cash, 1.0 - eff_cap, max(0.45, 1.0 - eff_cap)))
-    equity_exposure = float(np.clip(1.0 - target_cash, 0.0, eff_cap))
-    if stock_mask is not None and stock_mask.any():
+    equity_exposure = float(np.clip(min(1.0 - base_cash, eff_cap), 0.0, eff_cap))
+    tilt = 1.0 + 0.30 * np.tanh(asset_logits[top_idx])
+    asset_dist = np.zeros(n_assets, dtype=np.float64)
+    asset_dist[top_idx] = tilt / np.sum(tilt)
+    if is_broad:
         return _redistribute_under_stock_limits(
             asset_dist, stock_mask, equity_exposure, alpha=alpha_t, prev_w=prev_w
         )
@@ -856,6 +879,31 @@ def _rl_training_return_legs(
     return overnight_rets, intraday_rets
 
 
+def _training_turnover_cost_rates(
+    execution_dates: pd.DatetimeIndex,
+    symbols: Sequence[str],
+    stock_mask: np.ndarray,
+    cost: Costs,
+) -> tuple[np.ndarray, np.ndarray]:
+    """按份额账本的佣金、滑点、印花税和过户费生成比例费率。不含 5 元最低佣金。"""
+    probe = 10_000_000.0
+    slip = cost.slippage_bps / 10_000
+    kinds = np.where(np.asarray(stock_mask, dtype=bool), "stock", "etf")
+    if len(kinds) != len(symbols):
+        raise ValueError("stock_mask must align with symbols")
+    buy = np.empty((len(execution_dates), len(symbols)), dtype=np.float64)
+    sell = np.empty_like(buy)
+    for i, day in enumerate(execution_dates):
+        session = pd.Timestamp(day).date()
+        for j, kind in enumerate(kinds):
+            for side, dest in (("buy", buy), ("sell", sell)):
+                commission, stamp, transfer = cost.charges(session, str(kind), side, probe)
+                if abs(commission - cost.commission_rate * probe) > 0.01:
+                    raise ValueError("probe notional must sit above the minimum commission")
+                dest[i, j] = (commission + stamp + transfer) / probe + slip
+    return buy, sell
+
+
 def _opening_execution_masks(
     bars: pd.DataFrame, next_sessions: pd.DatetimeIndex, symbols: Sequence[str], cost: Costs,
 ) -> dict[str, np.ndarray]:
@@ -887,7 +935,7 @@ def run_walk_forward_ablation_experiment(
     oos_step_sessions: int = 160,
     epochs_per_fold: int = 8,
     ppo_seeds: Sequence[int] = PPO_SEEDS,
-    rl_respect_opening_limits: bool = False,
+    rl_respect_opening_limits: bool = True,
 ) -> Dict[str, Any]:
     """执行端到端 Walk-Forward 样本外训练 + 真实份额账本同口径消融 (含 5-Seed PPO 与 Prior-Only 对照)."""
     panel = build_open_to_open_panel(
@@ -927,9 +975,13 @@ def run_walk_forward_ablation_experiment(
     overnight_rets, intraday_rets = _rl_training_return_legs(
         bars_df, actions_df, panel.close_returns, training_execution_dates
     )
+    ledger_costs = Costs()
     opening_masks = (
-        _opening_execution_masks(bars_df, training_execution_dates, oos_stream.symbols, Costs())
+        _opening_execution_masks(bars_df, training_execution_dates, oos_stream.symbols, ledger_costs)
         if rl_respect_opening_limits else {}
+    )
+    train_buy_rates, train_sell_rates = _training_turnover_cost_rates(
+        training_execution_dates, oos_stream.symbols, stock_mask, ledger_costs,
     )
     eval_idx = np.arange(rl_split, n_oos)
 
@@ -971,25 +1023,25 @@ def run_walk_forward_ablation_experiment(
         ema_state = raw_p if idx_t == 0 else (1.0 - ema_eta) * ema_state + ema_eta * raw_p
         smoothed_alpha[idx_t] = cross_sectional_mad_zscore(ema_state) if n_assets > 6 else ema_state
 
-    deadband_val = 0.22 if n_assets > 6 else 0.16
-    blend_val = 0.45 if n_assets > 6 else 0.35
-    swap_margin_val = 1.15 if n_assets > 6 else 0.55
-    max_drop_val = 2 if n_assets > 6 else 1
+    deadband_val, blend_val, swap_margin_val, max_drop_val = policy_rebalance_thresholds(n_assets)
+
+    train_hmm = np.asarray(oos_stream.oos_hmm_exposure, dtype=np.float64)[np.asarray(rl_train_idx, dtype=int)]
 
     def training_env(local: slice = slice(None)) -> ASharePortfolioEnv:
-        rl_alpha = (
-            smoothed_alpha[rl_train_idx].astype(np.float32)
-            if n_assets > 6
-            else oos_stream.oos_alpha[rl_train_idx]
-        )
+        masks = {name: values[local] for name, values in opening_masks.items()}
         return ASharePortfolioEnv(
-            alpha_preds=rl_alpha[local],
+            alpha_preds=smoothed_alpha[rl_train_idx][local].astype(np.float32),
             vol_features=oos_stream.vol_feats[rl_train_idx][local],
             real_next_rets=intraday_rets[local],
             overnight_rets=overnight_rets[local],
             rebalance_interval=horizon,
             top_k=k,
-            **{name: values[local] for name, values in opening_masks.items()},
+            smooth_alpha=False,
+            hmm_exposure=train_hmm[local],
+            stock_mask=stock_mask,
+            buy_cost_rates=train_buy_rates[local],
+            sell_cost_rates=train_sell_rates[local],
+            **masks,
         )
 
     decision_indices = {oos_stream.dates[i].date(): i for i in eval_idx[::horizon]}
@@ -1059,6 +1111,7 @@ def run_walk_forward_ablation_experiment(
     def rl_policy(
         predict_delta: Callable[[torch.Tensor], torch.Tensor] | None = None,
         *,
+        residual_scale: float = 1.0,
         decisions: Mapping[date, int] = decision_indices,
     ) -> Callable[[CloseState], Mapping[str, float] | None]:
         def propose(i: int, held: np.ndarray, state: CloseState) -> np.ndarray:
@@ -1067,16 +1120,15 @@ def run_walk_forward_ablation_experiment(
                 alpha, oos_stream.vol_feats[i], held, [state.cash / state.nav, state.drawdown]
             ]).astype(np.float32)
             logits = build_alpha_risk_prior(obs, n_assets, top_k=k).squeeze(0).numpy()
-            delta_arr = None
             if predict_delta is not None:
                 with torch.no_grad():
                     delta_arr = predict_delta(torch.tensor(obs).unsqueeze(0)).squeeze(0).numpy()
                 if delta_arr.shape != logits.shape or not np.isfinite(delta_arr).all():
                     raise _InvalidPolicyResidual("policy residual must match the finite asset-and-cash logits")
-                logits = logits + 0.85 * delta_arr
+                logits = logits + residual_scale * delta_arr
             return _weights_from_policy_logits(
                 logits, alpha, held, state.drawdown, oos_stream.oos_hmm_exposure[i], k,
-                delta=delta_arr, stock_mask=stock_mask, swap_margin=swap_margin_val, max_drop=max_drop_val,
+                stock_mask=stock_mask, swap_margin=swap_margin_val, max_drop=max_drop_val,
             )
 
         return close_policy(propose, enforce_hmm_cap=True, decisions=decisions)
@@ -1159,7 +1211,10 @@ def run_walk_forward_ablation_experiment(
         _set_seed(seed_val)
         model = train_ppo_portfolio_agent(training_env(), rollout_episodes=20, ppo_epochs=4, lr=1.5e-3)
         model.eval()
-        ppo_seed_policies[seed_val] = rl_policy(lambda obs, actor=model: actor(obs)[0])
+        ppo_seed_policies[seed_val] = rl_policy(
+            lambda obs, actor=model: actor(obs)[0],
+            residual_scale=PPO_PRIOR_RESIDUAL_SCALE,
+        )
 
     # 各摩擦情景从独立账本的收盘状态出发，成交或拒单都会影响后续信号。
     ledger_reports: Dict[str, Dict[str, Any]] = {}
@@ -1242,7 +1297,8 @@ def run_walk_forward_ablation_experiment(
                 "applies_to": "HRP and RL target weights before lot rounding and fills",
             },
             "evaluation_policy_state": "actual share-ledger holdings, cash and drawdown at signal close",
-            "rl_training_transition": "fractional next-session approximation: old holdings close-to-open, target holdings open-to-close; simplified costs",
+            "rl_training_transition": "fractional next-session approximation: old holdings close-to-open, target holdings open-to-close; proportional ledger costs excluding the 5 yuan minimum",
+            "rl_training_action": "same logits, HMM cap, stock limits and turnover deadband as the share-ledger policy",
             "rl_opening_execution": {
                 "mode": "ledger_opening_checks" if rl_respect_opening_limits else "unconstrained_fractional",
                 "training_execution_dates": [str(training_execution_dates[0].date()), str(training_execution_dates[-1].date())],
@@ -1288,8 +1344,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("--horizon", type=int, default=5, choices=(5, 20))
     parser.add_argument("--top-k", type=int, default=0, help="Top-K active holdings (0 = auto: 2 for <=6 assets, 5 for >6)")
     parser.add_argument("--capital", type=float, default=100_000.0)
-    parser.add_argument("--rl-respect-opening-limits", action="store_true",
-                        help="Apply the share ledger's opening checks to RL training trades")
+    parser.add_argument(
+        "--rl-respect-opening-limits",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Apply the share ledger's opening checks to RL training trades",
+    )
     parser.add_argument("--out", type=Path, required=True, help="New output directory for report and artifacts")
     args = parser.parse_args(argv)
 

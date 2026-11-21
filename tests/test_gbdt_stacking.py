@@ -60,7 +60,7 @@ class GBDTStackingTests(unittest.TestCase):
         }
         model = OrthogonalTreeGNNStacker(random_state=42)
         blended, _ = model.fit_and_blend(train_x, train_y, val_x, val_y, test_x, gnn_preds)
-        self.assertLess(model.expert_weights["gnn"], 0.10)
+        self.assertEqual(model.expert_weights["gnn"], 0.0)
         self.assertGreater(model.expert_weights["ridge"] + model.expert_weights["tree"], 0.90)
         oos_ics = [
             float(np.corrcoef(p, y)[0, 1])

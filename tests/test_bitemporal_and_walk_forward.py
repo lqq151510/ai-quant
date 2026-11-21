@@ -34,7 +34,26 @@ from src.domain.kg_gnn.bitemporal_kg_bridge import (
 from src.domain.kg_gnn.graph_model import SpatioTemporalKGAlphaModel
 from src.domain.rl_portfolio.a_share_env import ASharePortfolioEnv
 from src.domain.rl_portfolio.offline_iql import IQLNetworks, predict_pessimistic_iql_ensemble
-from src.domain.rl_portfolio.ppo_agent import train_ppo_portfolio_agent
+from src.domain.rl_portfolio.ppo_agent import (
+    CASH_LOGIT_NORMAL,
+    DRAWDOWN_CASH_COEF,
+    DRAWDOWN_LOGIT_COEF,
+    DRAWDOWN_LOGIT_START,
+    VOL_LOGIT_COEF,
+    build_alpha_risk_prior,
+    excess_cash_from_policy_logit,
+    train_ppo_portfolio_agent,
+)
+
+
+def _equity_exposure_before_excess_cash(logits: np.ndarray, current_dd: float, hmm_cap: float) -> float:
+    """改动前的现金公式：softmax 现金 + 0.50×回撤，再受 HMM 缓冲上限约束。"""
+    full = np.clip(np.asarray(logits, dtype=np.float64), -10.0, 10.0)
+    shifted = np.exp(full - np.max(full))
+    raw_cash = float(shifted[-1] / np.sum(shifted))
+    base_cash = float(np.clip(raw_cash + DRAWDOWN_CASH_COEF * max(0.0, current_dd), 0.05, 0.40))
+    eff_cap = max(0.60, hmm_cap - 0.060) if hmm_cap > 0.65 else hmm_cap
+    return float(np.clip(min(1.0 - base_cash, eff_cap), 0.0, eff_cap))
 
 
 class BitemporalAndWalkForwardTests(unittest.TestCase):
@@ -427,7 +446,7 @@ class BitemporalAndWalkForwardTests(unittest.TestCase):
         ppo_summary = normal_ledgers["rl_ppo_5seed_summary"]
         self.assertEqual(len(ppo_summary["per_seed"]), 2)
         self.assertLess(ppo_summary["max_reconciliation_error"], 1e-6)
-
+        self.assertEqual(res["protocol"]["rl_opening_execution"]["mode"], "ledger_opening_checks")
         self.assertEqual(res["protocol"]["iql_residual_scale"], 0.0)
         self.assertEqual(res["protocol"]["iql_ledger_gate"]["status"], "insufficient_validation")
         for ledgers in res["share_ledger_ablation"].values():
@@ -491,6 +510,23 @@ class BitemporalAndWalkForwardTests(unittest.TestCase):
         np.testing.assert_array_equal(masks["buy_allowed"], [[False, False], [True, False]])
         np.testing.assert_array_equal(masks["sell_allowed"], [[False, True], [False, False]])
 
+    def test_training_turnover_rates_follow_ledger_schedules_without_minimum_commission(self) -> None:
+        from quant_research.ledger import Costs
+
+        cost = Costs()
+        days = pd.to_datetime(["2023-08-25", "2023-08-28"])
+        buy, sell = walk_forward_engine._training_turnover_cost_rates(
+            days, ["600000", "510300"], np.array([True, False]), cost,
+        )
+        slip = cost.slippage_bps / 10_000
+        etf = cost.commission_rate + slip
+        self.assertAlmostEqual(float(buy[0, 1]), etf)
+        self.assertAlmostEqual(float(sell[1, 1]), etf)
+        self.assertAlmostEqual(float(buy[0, 0]), etf + 0.00001)
+        self.assertAlmostEqual(float(sell[0, 0]), etf + 0.00001 + 0.001)
+        self.assertAlmostEqual(float(sell[1, 0]), etf + 0.00001 + 0.0005)
+        self.assertLess(float(sell[0, 0]) * 100.0, cost.minimum_commission)
+
     def test_wide28_supply_chain_graph_and_cohort_integrity(self) -> None:
         self.assertEqual(len(WIDE_CSI300_2015_COHORT), 24)
         edges_df = build_supply_chain_and_sector_edges()
@@ -553,6 +589,32 @@ class BitemporalAndWalkForwardTests(unittest.TestCase):
         self.assertEqual(float(out[16]), 0.0)
         self.assertEqual(float(out[19]), 0.0)
 
+    def test_realized_vol_zscore_rises_after_a_shock(self) -> None:
+        dates = pd.bdate_range("2020-01-01", periods=200)
+        calm = np.full(160, 0.001)
+        shock = np.resize(np.array([0.04, -0.05, 0.06, -0.04]), 40)
+        returns = pd.DataFrame(
+            {"a": np.concatenate([calm, shock]), "b": np.concatenate([calm, shock]) * 0.8},
+            index=dates,
+        )
+        zscore = walk_forward_engine._causal_realized_vol_zscore(returns)
+        self.assertLess(abs(float(zscore.iloc[100].mean())), 0.5)
+        self.assertGreater(float(zscore.iloc[-1].mean()), 1.0)
+        alpha = np.array([[1.0, -1.0], [3.0, -3.0]], dtype=np.float32)
+        zeros = np.zeros_like(alpha)
+        env = ASharePortfolioEnv(alpha, zeros, np.full_like(alpha, 0.001), rebalance_interval=1, top_k=1, smooth_alpha=False)
+        env.reset()
+        env.step(np.zeros(3, dtype=np.float32))
+        np.testing.assert_allclose(env._get_obs()[:2], alpha[1])
+
+        held = np.zeros(4, dtype=np.float32)
+        scores = np.array([1.0, 0.2, -0.2, -0.8], dtype=np.float32)
+        calm_obs = np.concatenate([scores, np.zeros(4, dtype=np.float32), held, np.array([1.0, 0.0], dtype=np.float32)])
+        hot_obs = np.concatenate([scores, np.full(4, 2.0, dtype=np.float32), held, np.array([1.0, 0.0], dtype=np.float32)])
+        calm_cash = float(build_alpha_risk_prior(calm_obs, 4, top_k=2)[0, -1])
+        hot_cash = float(build_alpha_risk_prior(hot_obs, 4, top_k=2)[0, -1])
+        self.assertGreater(hot_cash, calm_cash)
+
     def test_iql_validation_excludes_labels_ending_on_the_boundary(self) -> None:
         horizon = 20
         calendar = pd.bdate_range("2023-01-02", periods=181)
@@ -579,6 +641,96 @@ class BitemporalAndWalkForwardTests(unittest.TestCase):
                     walk_forward_engine._iql_improves_ledger(prior, {"final_nav": nav, "max_drawdown": drawdown}),
                     passed,
                 )
+
+    def test_policy_logits_control_cash_and_stay_inside_risk_caps(self) -> None:
+        alpha = np.array([1.0, 0.2, -0.4, -1.0])
+        previous = np.zeros(4)
+        defensive = np.array([1.2, 0.4, -1.0, -1.5, 4.0])
+        invested = walk_forward_engine._weights_from_policy_logits(
+            np.array([1.2, 0.4, -1.0, -1.5, -2.0]), alpha, previous, 0.0, 1.0, top_k=2,
+        )
+        defensive_weights = walk_forward_engine._weights_from_policy_logits(
+            defensive, alpha, previous, 0.12, 1.0, top_k=2,
+        )
+        self.assertGreater(float(invested.sum()), float(defensive_weights.sum()))
+        self.assertLessEqual(float(invested.sum()), 0.95 + 1e-9)
+        self.assertGreaterEqual(float(defensive_weights.sum()), 0.60 - 1e-9)
+        self.assertGreater(float(invested[0]), float(invested[1]))
+
+        capped = walk_forward_engine._weights_from_policy_logits(
+            np.array([2.0, 1.0, -2.0, -2.0, -3.0]), alpha, previous, 0.0, 0.70, top_k=2,
+        )
+        self.assertLessEqual(float(capped.sum()), 0.64 + 1e-9)
+
+        stock_mask = np.array([True, True, True, False])
+        broad = walk_forward_engine._weights_from_policy_logits(
+            np.array([3.0, 2.5, 2.0, 0.2, -2.0]), alpha, previous, 0.0, 1.0, top_k=3,
+            stock_mask=stock_mask,
+        )
+        self.assertTrue((broad[:3] <= 0.05 + 1e-9).all())
+        self.assertLessEqual(float(broad.sum()), 0.95 + 1e-9)
+        with self.assertRaises(ValueError):
+            walk_forward_engine._weights_from_policy_logits(
+                np.array([1.0, 0.0]), alpha, previous, 0.0, 1.0, top_k=2,
+            )
+
+    def test_normal_cash_logit_keeps_prechange_weights_under_hmm_cap(self) -> None:
+        alpha = np.array([1.0, 0.2, -0.4, -1.0])
+        previous = np.zeros(4)
+        logits = np.array([1.2, 0.4, -1.0, -1.5, CASH_LOGIT_NORMAL])
+        self.assertAlmostEqual(excess_cash_from_policy_logit(CASH_LOGIT_NORMAL, 0.0), 0.0, places=12)
+        calm = walk_forward_engine._weights_from_policy_logits(
+            logits, alpha, previous, 0.0, 1.0, top_k=2,
+        )
+        self.assertAlmostEqual(float(calm.sum()), _equity_exposure_before_excess_cash(logits, 0.0, 1.0), places=9)
+        capped = walk_forward_engine._weights_from_policy_logits(
+            logits, alpha, previous, 0.0, 0.70, top_k=2,
+        )
+        self.assertAlmostEqual(float(capped.sum()), _equity_exposure_before_excess_cash(logits, 0.0, 0.70), places=9)
+        self.assertLessEqual(float(capped.sum()), 0.64 + 1e-9)
+        self.assertLess(float(capped.sum()), float(calm.sum()))
+
+    def test_volatility_cash_logit_lowers_equity_without_exceeding_cash_cap(self) -> None:
+        alpha = np.array([1.0, 0.6, 0.2, -0.2])
+        previous = np.zeros(4)
+        asset_logits = np.array([2.0, 2.4, 2.8, 3.2])
+        calm_logit = CASH_LOGIT_NORMAL
+        hot_logit = CASH_LOGIT_NORMAL + VOL_LOGIT_COEF * 2.0
+        excess = excess_cash_from_policy_logit(hot_logit, 0.0)
+        self.assertAlmostEqual(excess, (VOL_LOGIT_COEF * 2.0) * (DRAWDOWN_CASH_COEF / DRAWDOWN_LOGIT_COEF), places=12)
+        self.assertGreater(excess, 0.04)
+        calm = walk_forward_engine._weights_from_policy_logits(
+            np.concatenate([asset_logits, [calm_logit]]), alpha, previous, 0.0, 1.0, top_k=2,
+        )
+        hot = walk_forward_engine._weights_from_policy_logits(
+            np.concatenate([asset_logits, [hot_logit]]), alpha, previous, 0.0, 1.0, top_k=2,
+        )
+        self.assertLess(float(hot.sum()), float(calm.sum()))
+        self.assertGreaterEqual(float(hot.sum()), 0.60 - 1e-9)
+        self.assertLess(float(hot.sum()), 0.95)
+
+    def test_drawdown_prior_does_not_cut_below_ledger_drawdown_cash(self) -> None:
+        drawdown = 0.15
+        scores = np.array([1.0, 0.2, -0.2, -0.8], dtype=np.float32)
+        obs = np.concatenate([
+            scores,
+            np.zeros(4, dtype=np.float32),
+            np.zeros(4, dtype=np.float32),
+            np.array([1.0, drawdown], dtype=np.float32),
+        ])
+        logits = build_alpha_risk_prior(obs, 4, top_k=2).squeeze(0).numpy()
+        expected_cash = (
+            CASH_LOGIT_NORMAL
+            + DRAWDOWN_LOGIT_COEF * max(0.0, drawdown - DRAWDOWN_LOGIT_START)
+        )
+        self.assertAlmostEqual(float(logits[-1]), expected_cash, places=5)
+        self.assertAlmostEqual(excess_cash_from_policy_logit(float(logits[-1]), drawdown), 0.0, places=5)
+        weights = walk_forward_engine._weights_from_policy_logits(
+            logits, scores.astype(np.float64), np.zeros(4), drawdown, 1.0, top_k=2,
+        )
+        legacy = _equity_exposure_before_excess_cash(logits, drawdown, 1.0)
+        self.assertAlmostEqual(float(weights.sum()), legacy, places=6)
+        self.assertGreaterEqual(float(weights.sum()) + 1e-8, legacy)
 
     def test_pessimistic_iql_ensemble_shrinks_on_disagreement_and_semimdp_ppo_converges(self) -> None:
         def _const_net(bias_vec: list[float]) -> IQLNetworks:

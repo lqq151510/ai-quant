@@ -155,13 +155,11 @@ class OrthogonalTreeGNNStacker:
         if "val_preds" in gnn_preds:
             gnn_va = self._row_zscore(gnn_preds["val_preds"])
             s_gnn = self._eval_skill(gnn_va, val_y)
-            raw_ridge = max(0.0, s_ridge) + 0.025
-            raw_tree = max(0.0, s_tree) + 0.020
-            raw_gnn = max(0.0, s_gnn) + 0.015
-            total_w = raw_ridge + raw_tree + raw_gnn
-            w_ridge = raw_ridge / total_w
-            w_tree = raw_tree / total_w
-            w_gnn = raw_gnn / total_w
+            raw = np.array([max(0.0, s_ridge), max(0.0, s_tree), max(0.0, s_gnn)], dtype=np.float64)
+            if float(raw.sum()) <= 1e-12:
+                raw[:] = 1.0
+            raw /= raw.sum()
+            w_ridge, w_tree, w_gnn = (float(item) for item in raw)
         else:
             raw_ridge = max(0.0, s_ridge) + 0.02
             raw_tree = max(0.0, s_tree) + 0.02
