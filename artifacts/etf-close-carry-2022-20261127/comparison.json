@@ -1,0 +1,684 @@
+{
+  "periods": {
+    "2017-2018": {
+      "ledger": {
+        "phase0": {
+          "normal": {
+            "donor": {
+              "net_return": 0.023776419871418986,
+              "max_drawdown": 0.23626389766403832,
+              "starting_nav": 106698.57
+            },
+            "hold": {
+              "net_return": -0.015301048552009755,
+              "max_drawdown": 0.2603496496041292,
+              "starting_nav": 106698.57
+            },
+            "switch": {
+              "net_return": -0.08800764621306556,
+              "max_drawdown": 0.2775230866960243,
+              "starting_nav": 106698.57
+            }
+          },
+          "double": {
+            "donor": {
+              "net_return": 0.016897736440786515,
+              "max_drawdown": 0.23943181494315646,
+              "starting_nav": 106607.77
+            },
+            "hold": {
+              "net_return": -0.015314080765407634,
+              "max_drawdown": 0.26051665881653774,
+              "starting_nav": 106607.77
+            },
+            "switch": {
+              "net_return": -0.10667308771208706,
+              "max_drawdown": 0.2846850505120304,
+              "starting_nav": 106607.77
+            }
+          }
+        },
+        "passing": {
+          "hold": [
+            0,
+            19
+          ],
+          "switch": [
+            0,
+            2,
+            4,
+            8,
+            16,
+            17,
+            18,
+            19
+          ],
+          "both": [
+            0,
+            19
+          ]
+        },
+        "passes": false,
+        "median_minimum_gain_pp": -6.1943823941359,
+        "offsets": [
+          {
+            "offset": 0,
+            "minimum_gain_pp": 3.221181720619415,
+            "minimum_drawdown_reduction_pp": 2.1084843873381276
+          },
+          {
+            "offset": 1,
+            "minimum_gain_pp": -5.057192636921448,
+            "minimum_drawdown_reduction_pp": -1.604324479492647
+          },
+          {
+            "offset": 2,
+            "minimum_gain_pp": -5.269025925172343,
+            "minimum_drawdown_reduction_pp": 0.39594799156795757
+          },
+          {
+            "offset": 3,
+            "minimum_gain_pp": -10.122914309207264,
+            "minimum_drawdown_reduction_pp": -0.9824269680176356
+          },
+          {
+            "offset": 4,
+            "minimum_gain_pp": -5.3782660021036595,
+            "minimum_drawdown_reduction_pp": 0.2854477291107771
+          },
+          {
+            "offset": 5,
+            "minimum_gain_pp": -13.80268894532054,
+            "minimum_drawdown_reduction_pp": -2.467579371830042
+          },
+          {
+            "offset": 6,
+            "minimum_gain_pp": -13.148302782212419,
+            "minimum_drawdown_reduction_pp": -2.003926370753073
+          },
+          {
+            "offset": 7,
+            "minimum_gain_pp": -10.061445640867605,
+            "minimum_drawdown_reduction_pp": -0.46154281277404063
+          },
+          {
+            "offset": 8,
+            "minimum_gain_pp": -4.658140394318055,
+            "minimum_drawdown_reduction_pp": 0.1764938133970384
+          },
+          {
+            "offset": 9,
+            "minimum_gain_pp": -6.981138658409725,
+            "minimum_drawdown_reduction_pp": -1.0273267839634004
+          },
+          {
+            "offset": 10,
+            "minimum_gain_pp": -5.693107687970366,
+            "minimum_drawdown_reduction_pp": -1.1433935508839754
+          },
+          {
+            "offset": 11,
+            "minimum_gain_pp": -7.530624816701847,
+            "minimum_drawdown_reduction_pp": -0.9674119851429852
+          },
+          {
+            "offset": 12,
+            "minimum_gain_pp": -14.29717774891156,
+            "minimum_drawdown_reduction_pp": -1.6201979758105
+          },
+          {
+            "offset": 13,
+            "minimum_gain_pp": -8.853960246500293,
+            "minimum_drawdown_reduction_pp": -0.8534845971975402
+          },
+          {
+            "offset": 14,
+            "minimum_gain_pp": -10.086213210993423,
+            "minimum_drawdown_reduction_pp": -0.8354957403190366
+          },
+          {
+            "offset": 15,
+            "minimum_gain_pp": -6.05001263442727,
+            "minimum_drawdown_reduction_pp": 2.088908453329008
+          },
+          {
+            "offset": 16,
+            "minimum_gain_pp": -5.3849600353797715,
+            "minimum_drawdown_reduction_pp": 0.7335983323603523
+          },
+          {
+            "offset": 17,
+            "minimum_gain_pp": -6.3387521538445295,
+            "minimum_drawdown_reduction_pp": 1.073199516507961
+          },
+          {
+            "offset": 18,
+            "minimum_gain_pp": -0.0044643728551396755,
+            "minimum_drawdown_reduction_pp": 2.7131771980293595
+          },
+          {
+            "offset": 19,
+            "minimum_gain_pp": 0.11527594832690946,
+            "minimum_drawdown_reduction_pp": 3.1057805365622637
+          }
+        ]
+      },
+      "matched": {
+        "reviews": 486,
+        "changed": 404,
+        "mature": 393,
+        "changed_unmatured": 11,
+        "immature_all": 20,
+        "actions": {
+          "switch": {
+            "count": 200,
+            "actual_switch_better": 95,
+            "mean_switch_minus_hold_bp": -15.833247165771647,
+            "earliest_phase0": {
+              "date": "2017-11-22",
+              "entry": "2017-11-23",
+              "exit": "2017-12-21",
+              "held": [
+                "510050",
+                "510300"
+              ],
+              "high": [
+                "510500",
+                "510880"
+              ],
+              "action": "switch",
+              "nav_cents": 13639837,
+              "label_bp": 42.71018781236169,
+              "hold_exit_cents": 13022727,
+              "switch_exit_cents": 13080983,
+              "actual_exit_cents": 13080983,
+              "source": "donor_only",
+              "phase": 0
+            }
+          },
+          "hold": {
+            "count": 193,
+            "actual_switch_better": 97,
+            "mean_switch_minus_hold_bp": -5.761593994217752,
+            "earliest_phase0": {
+              "date": "2017-01-25",
+              "entry": "2017-01-26",
+              "exit": "2017-03-02",
+              "held": [
+                "510050",
+                "510300"
+              ],
+              "high": [
+                "510300",
+                "510500"
+              ],
+              "action": "hold",
+              "nav_cents": 10905757,
+              "label_bp": 141.27675868809473,
+              "hold_exit_cents": 11071217,
+              "switch_exit_cents": 11225290,
+              "actual_exit_cents": 11071217,
+              "source": "neither_switch",
+              "phase": 0
+            }
+          }
+        },
+        "mean_vs_hold_bp": -8.057632145430864,
+        "mean_vs_switch_bp": 2.8294850913079546,
+        "same_month_selection_bp": 1.4820087535357114
+      }
+    },
+    "2020-2021": {
+      "ledger": {
+        "phase0": {
+          "normal": {
+            "donor": {
+              "net_return": 0.3814151633605649,
+              "max_drawdown": 0.14992337819044732,
+              "starting_nav": 131857.71
+            },
+            "hold": {
+              "net_return": 0.08472011230894272,
+              "max_drawdown": 0.15219364569592264,
+              "starting_nav": 131857.71
+            },
+            "switch": {
+              "net_return": 0.30559805717845423,
+              "max_drawdown": 0.14992337819044732,
+              "starting_nav": 131857.71
+            }
+          },
+          "double": {
+            "donor": {
+              "net_return": 0.3777363718711275,
+              "max_drawdown": 0.15034706155254873,
+              "starting_nav": 131350.02
+            },
+            "hold": {
+              "net_return": 0.08462579602195719,
+              "max_drawdown": 0.15202586461971856,
+              "starting_nav": 131350.02
+            },
+            "switch": {
+              "net_return": 0.2867239761364331,
+              "max_drawdown": 0.15034706155254873,
+              "starting_nav": 131350.02
+            }
+          }
+        },
+        "passing": {
+          "hold": [
+            0
+          ],
+          "switch": [
+            0,
+            12
+          ],
+          "both": [
+            0
+          ]
+        },
+        "passes": false,
+        "median_minimum_gain_pp": -2.965157964807086,
+        "offsets": [
+          {
+            "offset": 0,
+            "minimum_gain_pp": 7.581710618211068,
+            "minimum_drawdown_reduction_pp": 0.0
+          },
+          {
+            "offset": 1,
+            "minimum_gain_pp": -15.416277094780483,
+            "minimum_drawdown_reduction_pp": -2.494045525137212
+          },
+          {
+            "offset": 2,
+            "minimum_gain_pp": -14.32790010352698,
+            "minimum_drawdown_reduction_pp": -2.4768288122596682
+          },
+          {
+            "offset": 3,
+            "minimum_gain_pp": -5.647057719004245,
+            "minimum_drawdown_reduction_pp": -4.274902167612082
+          },
+          {
+            "offset": 4,
+            "minimum_gain_pp": -2.4972239839477606,
+            "minimum_drawdown_reduction_pp": -0.7810930755909551
+          },
+          {
+            "offset": 5,
+            "minimum_gain_pp": 4.276760697426196,
+            "minimum_drawdown_reduction_pp": -0.4788478811058594
+          },
+          {
+            "offset": 6,
+            "minimum_gain_pp": 6.038150126021202,
+            "minimum_drawdown_reduction_pp": -0.7047237600728229
+          },
+          {
+            "offset": 7,
+            "minimum_gain_pp": -0.5943285161445822,
+            "minimum_drawdown_reduction_pp": -2.3059441485060117
+          },
+          {
+            "offset": 8,
+            "minimum_gain_pp": -6.597133707742797,
+            "minimum_drawdown_reduction_pp": -1.027326754793978
+          },
+          {
+            "offset": 9,
+            "minimum_gain_pp": -8.45024692574321,
+            "minimum_drawdown_reduction_pp": -0.9737453453181222
+          },
+          {
+            "offset": 10,
+            "minimum_gain_pp": 3.1056921467013776,
+            "minimum_drawdown_reduction_pp": -1.067887935123124
+          },
+          {
+            "offset": 11,
+            "minimum_gain_pp": 1.3286250091448126,
+            "minimum_drawdown_reduction_pp": -0.8452265852433416
+          },
+          {
+            "offset": 12,
+            "minimum_gain_pp": 7.6599463337191365,
+            "minimum_drawdown_reduction_pp": -0.24287335101547125
+          },
+          {
+            "offset": 13,
+            "minimum_gain_pp": -4.645939401812971,
+            "minimum_drawdown_reduction_pp": -1.2701179192375567
+          },
+          {
+            "offset": 14,
+            "minimum_gain_pp": -3.433091945666411,
+            "minimum_drawdown_reduction_pp": -1.0777027263122574
+          },
+          {
+            "offset": 15,
+            "minimum_gain_pp": 1.4211180534104528,
+            "minimum_drawdown_reduction_pp": -1.1887706051869174
+          },
+          {
+            "offset": 16,
+            "minimum_gain_pp": 11.33833493716363,
+            "minimum_drawdown_reduction_pp": -1.6506385105032995
+          },
+          {
+            "offset": 17,
+            "minimum_gain_pp": -5.232267327866014,
+            "minimum_drawdown_reduction_pp": -1.271561406829591
+          },
+          {
+            "offset": 18,
+            "minimum_gain_pp": -11.631153414921979,
+            "minimum_drawdown_reduction_pp": -2.8620666166004782
+          },
+          {
+            "offset": 19,
+            "minimum_gain_pp": -15.043280967630746,
+            "minimum_drawdown_reduction_pp": -2.5554507169373575
+          }
+        ]
+      },
+      "matched": {
+        "reviews": 485,
+        "changed": 371,
+        "mature": 354,
+        "changed_unmatured": 17,
+        "immature_all": 20,
+        "actions": {
+          "switch": {
+            "count": 53,
+            "actual_switch_better": 31,
+            "mean_switch_minus_hold_bp": 53.69219691828886,
+            "earliest_phase0": {
+              "date": "2020-02-03",
+              "entry": "2020-02-04",
+              "exit": "2020-03-03",
+              "held": [
+                "510050",
+                "510880"
+              ],
+              "high": [
+                "510050",
+                "510300"
+              ],
+              "action": "switch",
+              "nav_cents": 11808171,
+              "label_bp": 134.34849478382384,
+              "hold_exit_cents": 12731521,
+              "switch_exit_cents": 12890162,
+              "actual_exit_cents": 12890162,
+              "source": "donor_only",
+              "phase": 0
+            }
+          },
+          "hold": {
+            "count": 301,
+            "actual_switch_better": 141,
+            "mean_switch_minus_hold_bp": 11.647055645130376,
+            "earliest_phase0": {
+              "date": "2020-03-30",
+              "entry": "2020-03-31",
+              "exit": "2020-04-29",
+              "held": [
+                "510050",
+                "510300"
+              ],
+              "high": [
+                "510300",
+                "510880"
+              ],
+              "action": "hold",
+              "nav_cents": 11774742,
+              "label_bp": -250.06068073508533,
+              "hold_exit_cents": 12237542,
+              "switch_exit_cents": 11943102,
+              "actual_exit_cents": 12237542,
+              "source": "neither_switch",
+              "phase": 0
+            }
+          }
+        },
+        "mean_vs_hold_bp": 8.038662250478275,
+        "mean_vs_switch_bp": -9.903287427074133,
+        "same_month_selection_bp": 5.435626555958232
+      }
+    },
+    "2022": {
+      "ledger": {
+        "phase0": {
+          "normal": {
+            "donor": {
+              "net_return": -0.11024443338641765,
+              "max_drawdown": 0.2042408795966283,
+              "starting_nav": 182150.24
+            },
+            "hold": {
+              "net_return": -0.0754134059883752,
+              "max_drawdown": 0.14380890973956917,
+              "starting_nav": 182150.24
+            },
+            "switch": {
+              "net_return": -0.13433328443596892,
+              "max_drawdown": 0.20990860401748823,
+              "starting_nav": 182150.24
+            }
+          },
+          "double": {
+            "donor": {
+              "net_return": -0.11147228452684677,
+              "max_drawdown": 0.20565170522655107,
+              "starting_nav": 180965.7
+            },
+            "hold": {
+              "net_return": -0.07512512039574348,
+              "max_drawdown": 0.14341949846536195,
+              "starting_nav": 180965.7
+            },
+            "switch": {
+              "net_return": -0.13941564616941227,
+              "max_drawdown": 0.21358341273639792,
+              "starting_nav": 180965.7
+            }
+          }
+        },
+        "passing": {
+          "hold": [],
+          "switch": [
+            0,
+            3,
+            4,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15,
+            16,
+            17
+          ],
+          "both": []
+        },
+        "passes": false,
+        "median_minimum_gain_pp": -3.577875281080062,
+        "offsets": [
+          {
+            "offset": 0,
+            "minimum_gain_pp": -3.6347164131103282,
+            "minimum_drawdown_reduction_pp": -6.223220676118912
+          },
+          {
+            "offset": 1,
+            "minimum_gain_pp": -1.5154704917104356,
+            "minimum_drawdown_reduction_pp": -2.7529178101385887
+          },
+          {
+            "offset": 2,
+            "minimum_gain_pp": -4.626112355336387,
+            "minimum_drawdown_reduction_pp": -1.4884559270974207
+          },
+          {
+            "offset": 3,
+            "minimum_gain_pp": -7.88788343383322,
+            "minimum_drawdown_reduction_pp": -5.779043161640141
+          },
+          {
+            "offset": 4,
+            "minimum_gain_pp": -4.570282155527483,
+            "minimum_drawdown_reduction_pp": -6.961980133791568
+          },
+          {
+            "offset": 5,
+            "minimum_gain_pp": -8.25072043687134,
+            "minimum_drawdown_reduction_pp": -5.911036245351697
+          },
+          {
+            "offset": 6,
+            "minimum_gain_pp": -3.6415989964989293,
+            "minimum_drawdown_reduction_pp": -5.387021711143425
+          },
+          {
+            "offset": 7,
+            "minimum_gain_pp": -3.454170048606564,
+            "minimum_drawdown_reduction_pp": -5.213535623439835
+          },
+          {
+            "offset": 8,
+            "minimum_gain_pp": -3.5210341490497954,
+            "minimum_drawdown_reduction_pp": -6.024194475953893
+          },
+          {
+            "offset": 9,
+            "minimum_gain_pp": -5.573232727075073,
+            "minimum_drawdown_reduction_pp": -8.739957389274922
+          },
+          {
+            "offset": 10,
+            "minimum_gain_pp": 0.0,
+            "minimum_drawdown_reduction_pp": 0.0
+          },
+          {
+            "offset": 11,
+            "minimum_gain_pp": 0.0,
+            "minimum_drawdown_reduction_pp": 0.0
+          },
+          {
+            "offset": 12,
+            "minimum_gain_pp": 0.0,
+            "minimum_drawdown_reduction_pp": 0.0
+          },
+          {
+            "offset": 13,
+            "minimum_gain_pp": 0.0,
+            "minimum_drawdown_reduction_pp": 0.0
+          },
+          {
+            "offset": 14,
+            "minimum_gain_pp": 0.0,
+            "minimum_drawdown_reduction_pp": 0.0
+          },
+          {
+            "offset": 15,
+            "minimum_gain_pp": -3.098425643934488,
+            "minimum_drawdown_reduction_pp": -3.9913456310474937
+          },
+          {
+            "offset": 16,
+            "minimum_gain_pp": -5.536538679484004,
+            "minimum_drawdown_reduction_pp": -7.682978084737746
+          },
+          {
+            "offset": 17,
+            "minimum_gain_pp": -5.847259792291171,
+            "minimum_drawdown_reduction_pp": -6.061974273410531
+          },
+          {
+            "offset": 18,
+            "minimum_gain_pp": -4.661830821829627,
+            "minimum_drawdown_reduction_pp": -6.950006528208085
+          },
+          {
+            "offset": 19,
+            "minimum_gain_pp": -1.3887118536277998,
+            "minimum_drawdown_reduction_pp": -2.9730504138523073
+          }
+        ]
+      },
+      "matched": {
+        "reviews": 242,
+        "changed": 159,
+        "mature": 148,
+        "changed_unmatured": 11,
+        "immature_all": 21,
+        "actions": {
+          "switch": {
+            "count": 17,
+            "actual_switch_better": 1,
+            "mean_switch_minus_hold_bp": -263.638750431593,
+            "earliest_phase0": {
+              "date": "2022-03-22",
+              "entry": "2022-03-23",
+              "exit": "2022-04-22",
+              "action": "switch",
+              "held": [
+                "510500",
+                "510880"
+              ],
+              "high": [
+                "510050",
+                "510300"
+              ],
+              "nav_cents": 17340344,
+              "hold_exit_cents": 16610064,
+              "switch_exit_cents": 16447309,
+              "actual_exit_cents": 16447309,
+              "label_bp": -93.85915296720758,
+              "phase": 0
+            }
+          },
+          "hold": {
+            "count": 131,
+            "actual_switch_better": 59,
+            "mean_switch_minus_hold_bp": -49.90077153895868,
+            "earliest_phase0": {
+              "date": "2022-01-18",
+              "entry": "2022-01-19",
+              "exit": "2022-02-23",
+              "action": "hold",
+              "held": [
+                "510500",
+                "510880"
+              ],
+              "high": [
+                "510050",
+                "510500"
+              ],
+              "nav_cents": 18182224,
+              "hold_exit_cents": 17962064,
+              "switch_exit_cents": 17518544,
+              "actual_exit_cents": 17962064,
+              "label_bp": -243.9305554700019,
+              "phase": 0
+            }
+          }
+        },
+        "mean_vs_hold_bp": -30.282829441466767,
+        "mean_vs_switch_bp": 44.168926159483696,
+        "same_month_selection_bp": -19.85516120371181
+      }
+    }
+  },
+  "sources": {
+    "artifacts/etf-close-asset-values-20261127/asset_books.json": "e6cc0636a32104a55f2a81a16d6e8acdacb926f5f4911b3dd9129b859a4dd3e7",
+    "artifacts/etf-close-split-consensus-20261127/complement_books.json": "73bf6623291eb867828bd8227ea81dcdc20d56c84efa9b58d8df890ed6778350",
+    "artifacts/etf-close-carry-2022-20261127/books.json": "773c21e27b0ab279b9ddf9a8a94f8db25d948575c964a2c8c5f68d5588d48c0c",
+    "artifacts/etf-close-carry-2022-20261127/protocol.md": "59dbb652fa3b7a45a9b3f257de27b50a01ea6c34695f68bba81fb9b9e35ec268",
+    "artifacts/etf-close-carry-2022-20261127/compare.py": "0953043c44be5fd18aea84e15bd5af7e2ff6434190023072a19acf1a7b424bc2"
+  }
+}
