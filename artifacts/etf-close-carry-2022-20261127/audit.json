@@ -1,0 +1,728 @@
+{
+  "through": "2022-12-30",
+  "initial_close": "2021-12-31",
+  "donor_cutoff": "2020-01-02",
+  "donor_last_training_exit": "2019-12-30",
+  "donor_training_rows": 702,
+  "donor_sha256": "f689efac016370f9d5e2c2ec81d72bab67d8344466c5c6e61839fe87cc8e8272",
+  "archive_sha256": "73bf6623291eb867828bd8227ea81dcdc20d56c84efa9b58d8df890ed6778350",
+  "archive_calendar_sha256": "a3e4549bae79f18da2885156db9bcd3b0cf02d12a2cef76480ce3211aa472b13",
+  "source_split_sha256": "2c933c4c0fddf34b5e90ab711990d34be0644d66275a7d8ea9a40467ebdb586c",
+  "verifier_sha256": "3db8a3bc90c4ca99c2f0105bb4eb57d10c19f1c8a4f078b0823cd310c4f02aa5",
+  "checks": {
+    "official": {
+      "source": "books.json",
+      "book_sha256": "773c21e27b0ab279b9ddf9a8a94f8db25d948575c964a2c8c5f68d5588d48c0c",
+      "signal_sha256": "0f094053abf923089a25b51177cf90c30f240cd197c458582252270e9497d458",
+      "forecast_sha256": "8f4b2e7471fc3e899de8a3fa22606e8c10a3dd7a3d2050c02ac450601f9ccc6d",
+      "fold": {
+        "new_sessions": 242,
+        "prior_scores": 3,
+        "seed": 45,
+        "train": {
+          "first": "2015-03-06",
+          "last": "2020-12-21",
+          "sessions": 1415,
+          "latest_label_end": "2021-01-20"
+        },
+        "calibration": {
+          "first": "2021-01-21",
+          "last": "2021-12-02",
+          "sessions": 209,
+          "latest_label_end": "2021-12-31"
+        },
+        "first_signal": "2022-01-04",
+        "last_signal": "2022-12-30",
+        "prefixes": [
+          "2022-01-04",
+          "2022-06-30",
+          "2022-08-29"
+        ],
+        "max_prefix_gap": 1.1920928955078125e-07
+      },
+      "verified": {
+        "accounts": 120,
+        "account_days": 29040,
+        "review_closes": 1452,
+        "filled_orders": 927,
+        "cash_events": 430,
+        "fork_reviews": 242,
+        "mature_forks": 221,
+        "mature_eligible_changed": 148,
+        "mature_forks_crossing_split": 21,
+        "immature_changed": 11
+      },
+      "prior_close_decisions": [
+        {
+          "phase": 9,
+          "fee": "normal",
+          "action": "hold",
+          "target": null,
+          "next_open": "2022-01-04",
+          "first_open_fills": []
+        },
+        {
+          "phase": 9,
+          "fee": "double",
+          "action": "hold",
+          "target": null,
+          "next_open": "2022-01-04",
+          "first_open_fills": []
+        }
+      ],
+      "settled_share_changes": [
+        {
+          "offset": 0,
+          "fee": "normal",
+          "arm": "hold",
+          "registered": 10400,
+          "increment": 1513
+        },
+        {
+          "offset": 0,
+          "fee": "double",
+          "arm": "hold",
+          "registered": 10300,
+          "increment": 1498
+        },
+        {
+          "offset": 3,
+          "fee": "normal",
+          "arm": "hold",
+          "registered": 7400,
+          "increment": 1076
+        },
+        {
+          "offset": 3,
+          "fee": "double",
+          "arm": "hold",
+          "registered": 7400,
+          "increment": 1076
+        },
+        {
+          "offset": 4,
+          "fee": "normal",
+          "arm": "hold",
+          "registered": 8300,
+          "increment": 1207
+        },
+        {
+          "offset": 4,
+          "fee": "double",
+          "arm": "hold",
+          "registered": 8300,
+          "increment": 1207
+        },
+        {
+          "offset": 5,
+          "fee": "normal",
+          "arm": "hold",
+          "registered": 8500,
+          "increment": 1236
+        },
+        {
+          "offset": 5,
+          "fee": "double",
+          "arm": "hold",
+          "registered": 8400,
+          "increment": 1222
+        },
+        {
+          "offset": 6,
+          "fee": "normal",
+          "arm": "hold",
+          "registered": 8600,
+          "increment": 1251
+        },
+        {
+          "offset": 6,
+          "fee": "double",
+          "arm": "hold",
+          "registered": 8600,
+          "increment": 1251
+        },
+        {
+          "offset": 7,
+          "fee": "normal",
+          "arm": "hold",
+          "registered": 8100,
+          "increment": 1178
+        },
+        {
+          "offset": 7,
+          "fee": "normal",
+          "arm": "switch",
+          "registered": 7300,
+          "increment": 1062
+        },
+        {
+          "offset": 7,
+          "fee": "double",
+          "arm": "hold",
+          "registered": 8100,
+          "increment": 1178
+        },
+        {
+          "offset": 7,
+          "fee": "double",
+          "arm": "switch",
+          "registered": 7300,
+          "increment": 1062
+        },
+        {
+          "offset": 8,
+          "fee": "normal",
+          "arm": "hold",
+          "registered": 7400,
+          "increment": 1076
+        },
+        {
+          "offset": 8,
+          "fee": "normal",
+          "arm": "switch",
+          "registered": 6800,
+          "increment": 989
+        },
+        {
+          "offset": 8,
+          "fee": "double",
+          "arm": "hold",
+          "registered": 7400,
+          "increment": 1076
+        },
+        {
+          "offset": 8,
+          "fee": "double",
+          "arm": "switch",
+          "registered": 6800,
+          "increment": 989
+        },
+        {
+          "offset": 9,
+          "fee": "normal",
+          "arm": "switch",
+          "registered": 7000,
+          "increment": 1018
+        },
+        {
+          "offset": 9,
+          "fee": "double",
+          "arm": "switch",
+          "registered": 6900,
+          "increment": 1004
+        },
+        {
+          "offset": 12,
+          "fee": "normal",
+          "arm": "donor",
+          "registered": 8000,
+          "increment": 1164
+        },
+        {
+          "offset": 12,
+          "fee": "normal",
+          "arm": "hold",
+          "registered": 8000,
+          "increment": 1164
+        },
+        {
+          "offset": 12,
+          "fee": "double",
+          "arm": "donor",
+          "registered": 8000,
+          "increment": 1164
+        },
+        {
+          "offset": 12,
+          "fee": "double",
+          "arm": "hold",
+          "registered": 8000,
+          "increment": 1164
+        },
+        {
+          "offset": 15,
+          "fee": "normal",
+          "arm": "donor",
+          "registered": 7700,
+          "increment": 1120
+        },
+        {
+          "offset": 15,
+          "fee": "double",
+          "arm": "donor",
+          "registered": 7700,
+          "increment": 1120
+        },
+        {
+          "offset": 16,
+          "fee": "normal",
+          "arm": "hold",
+          "registered": 8600,
+          "increment": 1251
+        },
+        {
+          "offset": 16,
+          "fee": "double",
+          "arm": "hold",
+          "registered": 8600,
+          "increment": 1251
+        },
+        {
+          "offset": 18,
+          "fee": "normal",
+          "arm": "hold",
+          "registered": 7600,
+          "increment": 1105
+        },
+        {
+          "offset": 18,
+          "fee": "double",
+          "arm": "hold",
+          "registered": 7600,
+          "increment": 1105
+        }
+      ],
+      "passing": {
+        "hold": [],
+        "switch": [
+          0,
+          3,
+          4,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17
+        ],
+        "both": []
+      },
+      "acceptance": false,
+      "phase_zero": {
+        "normal": {
+          "donor": {
+            "starting_nav": 182150.24,
+            "final_nav": 162069.19,
+            "net_return": -0.11024443338641765,
+            "max_drawdown": 0.2042408795966283,
+            "filled_orders": 4,
+            "transaction_fees": 92.5,
+            "traded_notional_over_average_nav": 1.8296091247590291
+          },
+          "hold": {
+            "starting_nav": 182150.24,
+            "final_nav": 168413.67,
+            "net_return": -0.0754134059883752,
+            "max_drawdown": 0.14380890973956917,
+            "filled_orders": 0,
+            "transaction_fees": 0.0,
+            "traded_notional_over_average_nav": 0.0
+          },
+          "switch": {
+            "starting_nav": 182150.24,
+            "final_nav": 157681.4,
+            "net_return": -0.13433328443596892,
+            "max_drawdown": 0.20990860401748823,
+            "filled_orders": 24,
+            "transaction_fees": 420.74,
+            "traded_notional_over_average_nav": 8.02765560236154
+          }
+        },
+        "double": {
+          "donor": {
+            "starting_nav": 180965.7,
+            "final_nav": 160793.04,
+            "net_return": -0.11147228452684677,
+            "max_drawdown": 0.20565170522655107,
+            "filled_orders": 4,
+            "transaction_fees": 183.96,
+            "traded_notional_over_average_nav": 1.833111328262995
+          },
+          "hold": {
+            "starting_nav": 180965.7,
+            "final_nav": 167370.63,
+            "net_return": -0.07512512039574348,
+            "max_drawdown": 0.14341949846536195,
+            "filled_orders": 0,
+            "transaction_fees": 0.0,
+            "traded_notional_over_average_nav": 0.0
+          },
+          "switch": {
+            "starting_nav": 180965.7,
+            "final_nav": 155736.25,
+            "net_return": -0.13941564616941227,
+            "max_drawdown": 0.21358341273639792,
+            "filled_orders": 24,
+            "transaction_fees": 831.81,
+            "traded_notional_over_average_nav": 8.004146349921276
+          }
+        }
+      }
+    },
+    "snapshot": {
+      "source": "snapshot_books.json",
+      "book_sha256": "04b34759484fc7ea040619870610b777b172dcbd956a13b1b9b1cfc50ed24608",
+      "signal_sha256": "31a6b35c48633a1ec8c8f7756fa2d30bc83872be4282c4d5d283c9525fe6dd6c",
+      "forecast_sha256": "a54c78e312c539fb427c10c5e66960798ca180f4f56e71d845167927f1fbc72a",
+      "fold": {
+        "new_sessions": 242,
+        "prior_scores": 3,
+        "seed": 45,
+        "train": {
+          "first": "2015-03-06",
+          "last": "2020-12-21",
+          "sessions": 1415,
+          "latest_label_end": "2021-01-20"
+        },
+        "calibration": {
+          "first": "2021-01-21",
+          "last": "2021-12-02",
+          "sessions": 209,
+          "latest_label_end": "2021-12-31"
+        },
+        "first_signal": "2022-01-04",
+        "last_signal": "2022-12-30",
+        "prefixes": [
+          "2022-01-04",
+          "2022-06-30"
+        ],
+        "max_prefix_gap": 1.1920928955078125e-07
+      },
+      "verified": {
+        "accounts": 120,
+        "account_days": 29040,
+        "review_closes": 1452,
+        "filled_orders": 927,
+        "cash_events": 430,
+        "fork_reviews": 242,
+        "mature_forks": 221,
+        "mature_eligible_changed": 148,
+        "mature_forks_crossing_split": 21,
+        "immature_changed": 11
+      },
+      "prior_close_decisions": [
+        {
+          "phase": 9,
+          "fee": "normal",
+          "action": "hold",
+          "target": null,
+          "next_open": "2022-01-04",
+          "first_open_fills": []
+        },
+        {
+          "phase": 9,
+          "fee": "double",
+          "action": "hold",
+          "target": null,
+          "next_open": "2022-01-04",
+          "first_open_fills": []
+        }
+      ],
+      "settled_share_changes": [
+        {
+          "offset": 0,
+          "fee": "normal",
+          "arm": "hold",
+          "registered": 10400,
+          "increment": 1512
+        },
+        {
+          "offset": 0,
+          "fee": "double",
+          "arm": "hold",
+          "registered": 10300,
+          "increment": 1497
+        },
+        {
+          "offset": 3,
+          "fee": "normal",
+          "arm": "hold",
+          "registered": 7400,
+          "increment": 1075
+        },
+        {
+          "offset": 3,
+          "fee": "double",
+          "arm": "hold",
+          "registered": 7400,
+          "increment": 1075
+        },
+        {
+          "offset": 4,
+          "fee": "normal",
+          "arm": "hold",
+          "registered": 8300,
+          "increment": 1206
+        },
+        {
+          "offset": 4,
+          "fee": "double",
+          "arm": "hold",
+          "registered": 8300,
+          "increment": 1206
+        },
+        {
+          "offset": 5,
+          "fee": "normal",
+          "arm": "hold",
+          "registered": 8500,
+          "increment": 1235
+        },
+        {
+          "offset": 5,
+          "fee": "double",
+          "arm": "hold",
+          "registered": 8400,
+          "increment": 1221
+        },
+        {
+          "offset": 6,
+          "fee": "normal",
+          "arm": "hold",
+          "registered": 8600,
+          "increment": 1250
+        },
+        {
+          "offset": 6,
+          "fee": "double",
+          "arm": "hold",
+          "registered": 8600,
+          "increment": 1250
+        },
+        {
+          "offset": 7,
+          "fee": "normal",
+          "arm": "hold",
+          "registered": 8100,
+          "increment": 1177
+        },
+        {
+          "offset": 7,
+          "fee": "normal",
+          "arm": "switch",
+          "registered": 7300,
+          "increment": 1061
+        },
+        {
+          "offset": 7,
+          "fee": "double",
+          "arm": "hold",
+          "registered": 8100,
+          "increment": 1177
+        },
+        {
+          "offset": 7,
+          "fee": "double",
+          "arm": "switch",
+          "registered": 7300,
+          "increment": 1061
+        },
+        {
+          "offset": 8,
+          "fee": "normal",
+          "arm": "hold",
+          "registered": 7400,
+          "increment": 1075
+        },
+        {
+          "offset": 8,
+          "fee": "normal",
+          "arm": "switch",
+          "registered": 6800,
+          "increment": 988
+        },
+        {
+          "offset": 8,
+          "fee": "double",
+          "arm": "hold",
+          "registered": 7400,
+          "increment": 1075
+        },
+        {
+          "offset": 8,
+          "fee": "double",
+          "arm": "switch",
+          "registered": 6800,
+          "increment": 988
+        },
+        {
+          "offset": 9,
+          "fee": "normal",
+          "arm": "switch",
+          "registered": 7000,
+          "increment": 1017
+        },
+        {
+          "offset": 9,
+          "fee": "double",
+          "arm": "switch",
+          "registered": 6900,
+          "increment": 1003
+        },
+        {
+          "offset": 12,
+          "fee": "normal",
+          "arm": "donor",
+          "registered": 8000,
+          "increment": 1163
+        },
+        {
+          "offset": 12,
+          "fee": "normal",
+          "arm": "hold",
+          "registered": 8000,
+          "increment": 1163
+        },
+        {
+          "offset": 12,
+          "fee": "double",
+          "arm": "donor",
+          "registered": 8000,
+          "increment": 1163
+        },
+        {
+          "offset": 12,
+          "fee": "double",
+          "arm": "hold",
+          "registered": 8000,
+          "increment": 1163
+        },
+        {
+          "offset": 15,
+          "fee": "normal",
+          "arm": "donor",
+          "registered": 7700,
+          "increment": 1119
+        },
+        {
+          "offset": 15,
+          "fee": "double",
+          "arm": "donor",
+          "registered": 7700,
+          "increment": 1119
+        },
+        {
+          "offset": 16,
+          "fee": "normal",
+          "arm": "hold",
+          "registered": 8600,
+          "increment": 1250
+        },
+        {
+          "offset": 16,
+          "fee": "double",
+          "arm": "hold",
+          "registered": 8600,
+          "increment": 1250
+        },
+        {
+          "offset": 18,
+          "fee": "normal",
+          "arm": "hold",
+          "registered": 7600,
+          "increment": 1105
+        },
+        {
+          "offset": 18,
+          "fee": "double",
+          "arm": "hold",
+          "registered": 7600,
+          "increment": 1105
+        }
+      ],
+      "passing": {
+        "hold": [],
+        "switch": [
+          0,
+          3,
+          4,
+          8,
+          9,
+          10,
+          11,
+          12,
+          13,
+          14,
+          15,
+          16,
+          17
+        ],
+        "both": []
+      },
+      "acceptance": false,
+      "phase_zero": {
+        "normal": {
+          "donor": {
+            "starting_nav": 182150.24,
+            "final_nav": 162069.19,
+            "net_return": -0.11024443338641765,
+            "max_drawdown": 0.2042408795966283,
+            "filled_orders": 4,
+            "transaction_fees": 92.5,
+            "traded_notional_over_average_nav": 1.8296091247590291
+          },
+          "hold": {
+            "starting_nav": 182150.24,
+            "final_nav": 168407.78,
+            "net_return": -0.07544574193259368,
+            "max_drawdown": 0.14380890973956917,
+            "filled_orders": 0,
+            "transaction_fees": 0.0,
+            "traded_notional_over_average_nav": 0.0
+          },
+          "switch": {
+            "starting_nav": 182150.24,
+            "final_nav": 157681.4,
+            "net_return": -0.13433328443596892,
+            "max_drawdown": 0.20990860401748823,
+            "filled_orders": 24,
+            "transaction_fees": 420.74,
+            "traded_notional_over_average_nav": 8.02765560236154
+          }
+        },
+        "double": {
+          "donor": {
+            "starting_nav": 180965.7,
+            "final_nav": 160793.04,
+            "net_return": -0.11147228452684677,
+            "max_drawdown": 0.20565170522655107,
+            "filled_orders": 4,
+            "transaction_fees": 183.96,
+            "traded_notional_over_average_nav": 1.833111328262995
+          },
+          "hold": {
+            "starting_nav": 180965.7,
+            "final_nav": 167364.74,
+            "net_return": -0.07515766800006862,
+            "max_drawdown": 0.14341949846536195,
+            "filled_orders": 0,
+            "transaction_fees": 0.0,
+            "traded_notional_over_average_nav": 0.0
+          },
+          "switch": {
+            "starting_nav": 180965.7,
+            "final_nav": 155736.25,
+            "net_return": -0.13941564616941227,
+            "max_drawdown": 0.21358341273639792,
+            "filled_orders": 24,
+            "transaction_fees": 831.81,
+            "traded_notional_over_average_nav": 8.004146349921276
+          }
+        }
+      }
+    }
+  },
+  "focused_tests": {
+    "timing_and_tradable_returns": {
+      "passed": 8,
+      "subtests_passed": 17
+    },
+    "ledger_and_timeline": {
+      "passed": 27
+    }
+  }
+}

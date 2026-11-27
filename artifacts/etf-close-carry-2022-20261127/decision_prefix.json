@@ -1,0 +1,266 @@
+{
+  "offset": 0,
+  "fee": "normal",
+  "rule": "donor20",
+  "symbols": [
+    "510050",
+    "510300",
+    "510500",
+    "510880"
+  ],
+  "feature_order": [
+    "raw_pair_score_edge",
+    "smoothed_pair_score_edge",
+    "relative_uncertainty_edge",
+    "market_exposure_cap",
+    "proposed_l1_turnover"
+  ],
+  "donor_last_label_exit": "2019-12-30",
+  "observations": [
+    {
+      "date": "2022-01-18",
+      "market": {
+        "snapshot": "research_v1/artifacts/market-etf-verified-20261108",
+        "snapshot_manifest_sha256": "6227df4d2415ae88faa8bc5fca48f504972a4bfe5c5c76abd180053eccb0b169",
+        "snapshot_coverage": {
+          "exchange_calendar": "verified",
+          "etf_raw_bars": "verified",
+          "etf_actions": "verified",
+          "etf_limits": "verified"
+        },
+        "symbols": [
+          "510050",
+          "510300",
+          "510500",
+          "510880"
+        ],
+        "static_relationships_are_legacy_priors": true,
+        "first_market_day": "2015-01-05",
+        "last_market_day": "2022-01-18",
+        "calendar_rows": 1716,
+        "bar_rows": 6864,
+        "actions_rows": 22,
+        "last_known_ex_date": "2022-01-17",
+        "prior_read_through": "2016-07-01",
+        "official_event_applied": false
+      },
+      "forecast_seed": 45,
+      "fit_labels_through": "2021-01-20",
+      "calibration_labels_through": "2021-12-31",
+      "hmm_fit_through": "2021-12-31",
+      "first_smoothed": "2019-01-02",
+      "smoothed_sessions": 741,
+      "forecast_sessions_2022": 11,
+      "current_label_available": false,
+      "raw": [
+        0.1880754679441452,
+        -1.0720806121826172,
+        1.543033480644226,
+        -0.6590283513069153
+      ],
+      "smoothed": [
+        0.5175465941429138,
+        -0.19080543518066406,
+        -0.034512441605329514,
+        -0.28769567608833313
+      ],
+      "relative_uncertainty": [
+        1.0067001802764466,
+        1.1138883205813748,
+        0.9932990557371417,
+        0.9482363229774339
+      ],
+      "close_prices": [
+        3.169,
+        4.881,
+        8.046,
+        2.858
+      ],
+      "account": {
+        "shares": [
+          0,
+          0,
+          10400,
+          27600
+        ],
+        "cash_cents": 1688944,
+        "receivable_cents": 237360
+      },
+      "nav_cents": 18182224,
+      "held": [
+        "510500",
+        "510880"
+      ],
+      "pair": [
+        "510050",
+        "510500"
+      ],
+      "weights": [
+        0.0,
+        0.0,
+        0.46022092786888996,
+        0.43383471680912084
+      ],
+      "features": [
+        0.42355190962553024,
+        0.4026211351156235,
+        0.0292319286495063,
+        0.9672595736563803,
+        0.8940556446780108
+      ],
+      "donor_bp": -36.020731642002275,
+      "action": "hold",
+      "target": null,
+      "baseline_bp": -22.943635429193137,
+      "contributions_bp": {
+        "raw_pair_score_edge": 4.478155475832717,
+        "smoothed_pair_score_edge": -2.984240203711237,
+        "relative_uncertainty_edge": -5.656363367542638,
+        "market_exposure_cap": -5.309161361811644,
+        "proposed_l1_turnover": -3.6054867555763406
+      },
+      "derived_max_prediction_difference_bp": 2.1189391024842205e-05,
+      "archived_prediction_bp": -36.0207528312933,
+      "decision_differences": {
+        "weights": 0.0,
+        "features": 1.2665987014770508e-07,
+        "donor_bp": 2.118929102579159e-05
+      },
+      "history_score_differences": {
+        "adaptive": 2.5331974029541016e-07,
+        "uncertainty": 2.384185791015625e-07,
+        "vol_feats": 0.0,
+        "hmm_cap": 0.0
+      }
+    },
+    {
+      "date": "2022-03-22",
+      "market": {
+        "snapshot": "research_v1/artifacts/market-etf-verified-20261108",
+        "snapshot_manifest_sha256": "6227df4d2415ae88faa8bc5fca48f504972a4bfe5c5c76abd180053eccb0b169",
+        "snapshot_coverage": {
+          "exchange_calendar": "verified",
+          "etf_raw_bars": "verified",
+          "etf_actions": "verified",
+          "etf_limits": "verified"
+        },
+        "symbols": [
+          "510050",
+          "510300",
+          "510500",
+          "510880"
+        ],
+        "static_relationships_are_legacy_priors": true,
+        "first_market_day": "2015-01-05",
+        "last_market_day": "2022-03-22",
+        "calendar_rows": 1756,
+        "bar_rows": 7024,
+        "actions_rows": 23,
+        "last_known_ex_date": "2022-01-19",
+        "prior_read_through": "2016-07-01",
+        "official_event_applied": false
+      },
+      "forecast_seed": 45,
+      "fit_labels_through": "2021-01-20",
+      "calibration_labels_through": "2021-12-31",
+      "hmm_fit_through": "2021-12-31",
+      "first_smoothed": "2019-01-02",
+      "smoothed_sessions": 781,
+      "forecast_sessions_2022": 51,
+      "current_label_available": false,
+      "raw": [
+        1.0212233066558838,
+        0.8766024708747864,
+        -0.5085722804069519,
+        -1.3892534971237183
+      ],
+      "smoothed": [
+        0.14341039955615997,
+        0.24098069965839386,
+        0.4735419750213623,
+        -0.8758846521377563
+      ],
+      "relative_uncertainty": [
+        1.0750887516978567,
+        1.0571777016968442,
+        0.9428215556407334,
+        0.9194485078748319
+      ],
+      "close_prices": [
+        2.882,
+        4.248,
+        7.133,
+        2.897
+      ],
+      "account": {
+        "shares": [
+          0,
+          0,
+          10400,
+          27600
+        ],
+        "cash_cents": 1926304,
+        "receivable_cents": 0
+      },
+      "nav_cents": 17340344,
+      "held": [
+        "510500",
+        "510880"
+      ],
+      "pair": [
+        "510050",
+        "510300"
+      ],
+      "weights": [
+        0.0,
+        0.0,
+        0.4278069685353416,
+        0.461105039207988
+      ],
+      "features": [
+        1.8978257775306702,
+        0.39336688816547394,
+        0.13499819493956777,
+        0.556226968347254,
+        1.7778240154866594
+      ],
+      "donor_bp": 8.782571146684106,
+      "action": "switch",
+      "target": {
+        "510050": 0.44445600387166484,
+        "510300": 0.44445600387166484
+      },
+      "baseline_bp": -22.943635429193137,
+      "contributions_bp": {
+        "raw_pair_score_edge": -5.8462154111829605,
+        "smoothed_pair_score_edge": -2.809050117337787,
+        "relative_uncertainty_edge": -29.251055869983734,
+        "market_exposure_cap": 56.52940579069553,
+        "proposed_l1_turnover": 13.103122183686192
+      },
+      "derived_max_prediction_difference_bp": 1.8625767729703648e-05,
+      "archived_prediction_bp": 8.782589772351841,
+      "decision_differences": {
+        "weights": 0.0,
+        "features": 8.255641592569418e-08,
+        "donor_bp": 1.8625667735250317e-05
+      },
+      "history_score_differences": {
+        "adaptive": 1.1920928955078125e-07,
+        "uncertainty": 4.76837158203125e-07,
+        "vol_feats": 0.0,
+        "hmm_cap": 0.0
+      }
+    }
+  ],
+  "frozen_manifest_sha256": "612c5af6b5c924f04aed9e04d1cc2a620ffe95a353a323a3fb8c8b7cc260a826",
+  "sources_sha256": {
+    "artifacts/etf-close-carry-2022-20261127/decision_prefix.py": "8926278d1ad6cd2ae7b4b1b42597c823ec878b8755dd95a91d880c8cc44f49a8",
+    "artifacts/etf-close-carry-2022-20261127/forecast_2022.py": "f24006db55717ea477f94d33b3799165d665efbd4ccbf9414e50bf51c40cfd3e",
+    "artifacts/etf-close-carry-2022-20261127/official_forecast.py": "2c9d0e940120dc17c85f20e53ca0effa9d4e5199b842345e2a4cb838f8435983",
+    "artifacts/etf-close-carry-2022-20261127/independent.py": "3db8a3bc90c4ca99c2f0105bb4eb57d10c19f1c8a4f078b0823cd310c4f02aa5",
+    "artifacts/etf-close-portfolio-states-20261127/models.json": "f689efac016370f9d5e2c2ec81d72bab67d8344466c5c6e61839fe87cc8e8272",
+    "artifacts/etf-close-carry-2022-20261127/books.json": "773c21e27b0ab279b9ddf9a8a94f8db25d948575c964a2c8c5f68d5588d48c0c",
+    "artifacts/etf-close-carry-2022-20261127/official_signals.npz": "0f094053abf923089a25b51177cf90c30f240cd197c458582252270e9497d458"
+  }
+}
