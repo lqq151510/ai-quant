@@ -1,0 +1,1025 @@
+{
+  "sources": {
+    "books.json": "773c21e27b0ab279b9ddf9a8a94f8db25d948575c964a2c8c5f68d5588d48c0c",
+    "snapshot_books.json": "04b34759484fc7ea040619870610b777b172dcbd956a13b1b9b1cfc50ed24608",
+    "official_forecast.json": "8f4b2e7471fc3e899de8a3fa22606e8c10a3dd7a3d2050c02ac450601f9ccc6d",
+    "510500_split_notice.pdf": "2c933c4c0fddf34b5e90ab711990d34be0644d66275a7d8ea9a40467ebdb586c"
+  },
+  "scores": {
+    "shared_sessions_before_effective": 888,
+    "field_differences": {
+      "adaptive": {
+        "changed_dates": 0,
+        "first_changed": null,
+        "max_abs_difference": 0.0
+      },
+      "uncertainty": {
+        "changed_dates": 0,
+        "first_changed": null,
+        "max_abs_difference": 0.0
+      },
+      "vol_feats": {
+        "changed_dates": 71,
+        "first_changed": "2022-08-29",
+        "max_abs_difference": 7.265717596727228e-05
+      },
+      "hmm_cap": {
+        "changed_dates": 65,
+        "first_changed": "2022-08-29",
+        "max_abs_difference": 2.3615665147858067e-06
+      }
+    },
+    "changed_rank_dates": [],
+    "changed_top_two_membership_dates": []
+  },
+  "paths_compared": {
+    "paths": 120,
+    "exposed": 30,
+    "any_daily_difference": 28,
+    "different_year_end_nav": 28,
+    "different_executions": 6,
+    "different_actions": 0
+  },
+  "forks": {
+    "mature_reviews": 221,
+    "different_final_branch_difference_cents": 10,
+    "different_relative_winner": 0
+  },
+  "example": {
+    "offset": 0,
+    "fee": "normal",
+    "arm": "hold",
+    "registered": 10400,
+    "official": 11913,
+    "snapshot": 11912,
+    "ex_day": "2022-08-29"
+  },
+  "paths": [
+    {
+      "offset": 0,
+      "fee": "normal",
+      "arm": "donor",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 0,
+      "fee": "normal",
+      "arm": "hold",
+      "first_difference": "2022-08-29",
+      "max_abs_daily_nav_cents": 632,
+      "year_end_delta_cents": 589
+    },
+    {
+      "offset": 0,
+      "fee": "normal",
+      "arm": "switch",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 0,
+      "fee": "double",
+      "arm": "donor",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 0,
+      "fee": "double",
+      "arm": "hold",
+      "first_difference": "2022-08-29",
+      "max_abs_daily_nav_cents": 631,
+      "year_end_delta_cents": 589
+    },
+    {
+      "offset": 0,
+      "fee": "double",
+      "arm": "switch",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 1,
+      "fee": "normal",
+      "arm": "donor",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 1,
+      "fee": "normal",
+      "arm": "hold",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 1,
+      "fee": "normal",
+      "arm": "switch",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 1,
+      "fee": "double",
+      "arm": "donor",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 1,
+      "fee": "double",
+      "arm": "hold",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 1,
+      "fee": "double",
+      "arm": "switch",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 2,
+      "fee": "normal",
+      "arm": "donor",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 2,
+      "fee": "normal",
+      "arm": "hold",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 2,
+      "fee": "normal",
+      "arm": "switch",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 2,
+      "fee": "double",
+      "arm": "donor",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 2,
+      "fee": "double",
+      "arm": "hold",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 2,
+      "fee": "double",
+      "arm": "switch",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 3,
+      "fee": "normal",
+      "arm": "donor",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 3,
+      "fee": "normal",
+      "arm": "hold",
+      "first_difference": "2022-08-29",
+      "max_abs_daily_nav_cents": 631,
+      "year_end_delta_cents": 588
+    },
+    {
+      "offset": 3,
+      "fee": "normal",
+      "arm": "switch",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 3,
+      "fee": "double",
+      "arm": "donor",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 3,
+      "fee": "double",
+      "arm": "hold",
+      "first_difference": "2022-08-29",
+      "max_abs_daily_nav_cents": 631,
+      "year_end_delta_cents": 588
+    },
+    {
+      "offset": 3,
+      "fee": "double",
+      "arm": "switch",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 4,
+      "fee": "normal",
+      "arm": "donor",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 4,
+      "fee": "normal",
+      "arm": "hold",
+      "first_difference": "2022-08-29",
+      "max_abs_daily_nav_cents": 632,
+      "year_end_delta_cents": 589
+    },
+    {
+      "offset": 4,
+      "fee": "normal",
+      "arm": "switch",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 4,
+      "fee": "double",
+      "arm": "donor",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 4,
+      "fee": "double",
+      "arm": "hold",
+      "first_difference": "2022-08-29",
+      "max_abs_daily_nav_cents": 632,
+      "year_end_delta_cents": 589
+    },
+    {
+      "offset": 4,
+      "fee": "double",
+      "arm": "switch",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 5,
+      "fee": "normal",
+      "arm": "donor",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 5,
+      "fee": "normal",
+      "arm": "hold",
+      "first_difference": "2022-08-29",
+      "max_abs_daily_nav_cents": 631,
+      "year_end_delta_cents": 589
+    },
+    {
+      "offset": 5,
+      "fee": "normal",
+      "arm": "switch",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 5,
+      "fee": "double",
+      "arm": "donor",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 5,
+      "fee": "double",
+      "arm": "hold",
+      "first_difference": "2022-08-29",
+      "max_abs_daily_nav_cents": 631,
+      "year_end_delta_cents": 588
+    },
+    {
+      "offset": 5,
+      "fee": "double",
+      "arm": "switch",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 6,
+      "fee": "normal",
+      "arm": "donor",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 6,
+      "fee": "normal",
+      "arm": "hold",
+      "first_difference": "2022-08-29",
+      "max_abs_daily_nav_cents": 632,
+      "year_end_delta_cents": 589
+    },
+    {
+      "offset": 6,
+      "fee": "normal",
+      "arm": "switch",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 6,
+      "fee": "double",
+      "arm": "donor",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 6,
+      "fee": "double",
+      "arm": "hold",
+      "first_difference": "2022-08-29",
+      "max_abs_daily_nav_cents": 632,
+      "year_end_delta_cents": 589
+    },
+    {
+      "offset": 6,
+      "fee": "double",
+      "arm": "switch",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 7,
+      "fee": "normal",
+      "arm": "donor",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 7,
+      "fee": "normal",
+      "arm": "hold",
+      "first_difference": "2022-08-29",
+      "max_abs_daily_nav_cents": 631,
+      "year_end_delta_cents": 589
+    },
+    {
+      "offset": 7,
+      "fee": "normal",
+      "arm": "switch",
+      "first_difference": "2022-08-29",
+      "max_abs_daily_nav_cents": 619,
+      "year_end_delta_cents": 619
+    },
+    {
+      "offset": 7,
+      "fee": "double",
+      "arm": "donor",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 7,
+      "fee": "double",
+      "arm": "hold",
+      "first_difference": "2022-08-29",
+      "max_abs_daily_nav_cents": 631,
+      "year_end_delta_cents": 589
+    },
+    {
+      "offset": 7,
+      "fee": "double",
+      "arm": "switch",
+      "first_difference": "2022-08-29",
+      "max_abs_daily_nav_cents": 619,
+      "year_end_delta_cents": 619
+    },
+    {
+      "offset": 8,
+      "fee": "normal",
+      "arm": "donor",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 8,
+      "fee": "normal",
+      "arm": "hold",
+      "first_difference": "2022-08-29",
+      "max_abs_daily_nav_cents": 631,
+      "year_end_delta_cents": 588
+    },
+    {
+      "offset": 8,
+      "fee": "normal",
+      "arm": "switch",
+      "first_difference": "2022-08-29",
+      "max_abs_daily_nav_cents": 630,
+      "year_end_delta_cents": 629
+    },
+    {
+      "offset": 8,
+      "fee": "double",
+      "arm": "donor",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 8,
+      "fee": "double",
+      "arm": "hold",
+      "first_difference": "2022-08-29",
+      "max_abs_daily_nav_cents": 631,
+      "year_end_delta_cents": 588
+    },
+    {
+      "offset": 8,
+      "fee": "double",
+      "arm": "switch",
+      "first_difference": "2022-08-29",
+      "max_abs_daily_nav_cents": 630,
+      "year_end_delta_cents": 629
+    },
+    {
+      "offset": 9,
+      "fee": "normal",
+      "arm": "donor",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 9,
+      "fee": "normal",
+      "arm": "hold",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 9,
+      "fee": "normal",
+      "arm": "switch",
+      "first_difference": "2022-08-29",
+      "max_abs_daily_nav_cents": 630,
+      "year_end_delta_cents": 626
+    },
+    {
+      "offset": 9,
+      "fee": "double",
+      "arm": "donor",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 9,
+      "fee": "double",
+      "arm": "hold",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 9,
+      "fee": "double",
+      "arm": "switch",
+      "first_difference": "2022-08-29",
+      "max_abs_daily_nav_cents": 630,
+      "year_end_delta_cents": 625
+    },
+    {
+      "offset": 10,
+      "fee": "normal",
+      "arm": "donor",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 10,
+      "fee": "normal",
+      "arm": "hold",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 10,
+      "fee": "normal",
+      "arm": "switch",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 10,
+      "fee": "double",
+      "arm": "donor",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 10,
+      "fee": "double",
+      "arm": "hold",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 10,
+      "fee": "double",
+      "arm": "switch",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 11,
+      "fee": "normal",
+      "arm": "donor",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 11,
+      "fee": "normal",
+      "arm": "hold",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 11,
+      "fee": "normal",
+      "arm": "switch",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 11,
+      "fee": "double",
+      "arm": "donor",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 11,
+      "fee": "double",
+      "arm": "hold",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 11,
+      "fee": "double",
+      "arm": "switch",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 12,
+      "fee": "normal",
+      "arm": "donor",
+      "first_difference": "2022-08-29",
+      "max_abs_daily_nav_cents": 631,
+      "year_end_delta_cents": 589
+    },
+    {
+      "offset": 12,
+      "fee": "normal",
+      "arm": "hold",
+      "first_difference": "2022-08-29",
+      "max_abs_daily_nav_cents": 631,
+      "year_end_delta_cents": 589
+    },
+    {
+      "offset": 12,
+      "fee": "normal",
+      "arm": "switch",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 12,
+      "fee": "double",
+      "arm": "donor",
+      "first_difference": "2022-08-29",
+      "max_abs_daily_nav_cents": 631,
+      "year_end_delta_cents": 589
+    },
+    {
+      "offset": 12,
+      "fee": "double",
+      "arm": "hold",
+      "first_difference": "2022-08-29",
+      "max_abs_daily_nav_cents": 631,
+      "year_end_delta_cents": 589
+    },
+    {
+      "offset": 12,
+      "fee": "double",
+      "arm": "switch",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 13,
+      "fee": "normal",
+      "arm": "donor",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 13,
+      "fee": "normal",
+      "arm": "hold",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 13,
+      "fee": "normal",
+      "arm": "switch",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 13,
+      "fee": "double",
+      "arm": "donor",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 13,
+      "fee": "double",
+      "arm": "hold",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 13,
+      "fee": "double",
+      "arm": "switch",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 14,
+      "fee": "normal",
+      "arm": "donor",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 14,
+      "fee": "normal",
+      "arm": "hold",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 14,
+      "fee": "normal",
+      "arm": "switch",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 14,
+      "fee": "double",
+      "arm": "donor",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 14,
+      "fee": "double",
+      "arm": "hold",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 14,
+      "fee": "double",
+      "arm": "switch",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 15,
+      "fee": "normal",
+      "arm": "donor",
+      "first_difference": "2022-08-29",
+      "max_abs_daily_nav_cents": 631,
+      "year_end_delta_cents": 589
+    },
+    {
+      "offset": 15,
+      "fee": "normal",
+      "arm": "hold",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 15,
+      "fee": "normal",
+      "arm": "switch",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 15,
+      "fee": "double",
+      "arm": "donor",
+      "first_difference": "2022-08-29",
+      "max_abs_daily_nav_cents": 631,
+      "year_end_delta_cents": 589
+    },
+    {
+      "offset": 15,
+      "fee": "double",
+      "arm": "hold",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 15,
+      "fee": "double",
+      "arm": "switch",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 16,
+      "fee": "normal",
+      "arm": "donor",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 16,
+      "fee": "normal",
+      "arm": "hold",
+      "first_difference": "2022-08-29",
+      "max_abs_daily_nav_cents": 632,
+      "year_end_delta_cents": 589
+    },
+    {
+      "offset": 16,
+      "fee": "normal",
+      "arm": "switch",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 16,
+      "fee": "double",
+      "arm": "donor",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 16,
+      "fee": "double",
+      "arm": "hold",
+      "first_difference": "2022-08-29",
+      "max_abs_daily_nav_cents": 632,
+      "year_end_delta_cents": 589
+    },
+    {
+      "offset": 16,
+      "fee": "double",
+      "arm": "switch",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 17,
+      "fee": "normal",
+      "arm": "donor",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 17,
+      "fee": "normal",
+      "arm": "hold",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 17,
+      "fee": "normal",
+      "arm": "switch",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 17,
+      "fee": "double",
+      "arm": "donor",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 17,
+      "fee": "double",
+      "arm": "hold",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 17,
+      "fee": "double",
+      "arm": "switch",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 18,
+      "fee": "normal",
+      "arm": "donor",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 18,
+      "fee": "normal",
+      "arm": "hold",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 18,
+      "fee": "normal",
+      "arm": "switch",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 18,
+      "fee": "double",
+      "arm": "donor",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 18,
+      "fee": "double",
+      "arm": "hold",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 18,
+      "fee": "double",
+      "arm": "switch",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 19,
+      "fee": "normal",
+      "arm": "donor",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 19,
+      "fee": "normal",
+      "arm": "hold",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 19,
+      "fee": "normal",
+      "arm": "switch",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 19,
+      "fee": "double",
+      "arm": "donor",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 19,
+      "fee": "double",
+      "arm": "hold",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    },
+    {
+      "offset": 19,
+      "fee": "double",
+      "arm": "switch",
+      "first_difference": null,
+      "max_abs_daily_nav_cents": 0,
+      "year_end_delta_cents": 0
+    }
+  ],
+  "maximum_abs_daily_gap_cents": 632,
+  "maximum_abs_year_end_gap_cents": 629,
+  "final_passing_offsets": {
+    "official": [],
+    "snapshot": []
+  }
+}

@@ -1,0 +1,185 @@
+{
+  "fold": {
+    "year": 2022,
+    "seed": 45,
+    "train": {
+      "first": "2015-03-06",
+      "last": "2020-12-21",
+      "sessions": 1415,
+      "latest_label_end": "2021-01-20"
+    },
+    "calibration": {
+      "first": "2021-01-21",
+      "last": "2021-12-02",
+      "sessions": 209,
+      "latest_label_end": "2021-12-31"
+    },
+    "first_oos": "2022-01-04",
+    "last_oos": "2022-12-30",
+    "oos_sessions": 242,
+    "first_calibration_before_purge": "2021-01-21",
+    "train_purged": 21,
+    "calibration_purged": 21,
+    "hmm_last_fit_date": "2021-12-31",
+    "weights": {
+      "ridge": 0.45453565741320545,
+      "tree": 0.2878686423074697,
+      "gnn": 0.25759570027932494
+    },
+    "skill": {
+      "ridge": 0.26430150370975486,
+      "tree": 0.16738866091551516,
+      "gnn": 0.1497856764867638
+    },
+    "ridge_alpha": 3000.0
+  },
+  "prefixes": [
+    {
+      "cutoff": "2022-01-04",
+      "sessions": 1,
+      "mature_panel_rows": 1646,
+      "training_rows": 1415,
+      "calibration_rows": 209,
+      "max_abs_difference": {
+        "adaptive": 1.1920928955078125e-07,
+        "uncertainty": 0.0,
+        "vol_feats": 0.0,
+        "hmm_cap": 0.0
+      },
+      "rank_order_equal": true,
+      "market": {
+        "snapshot": "research_v1/artifacts/market-etf-verified-20261108",
+        "snapshot_manifest_sha256": "6227df4d2415ae88faa8bc5fca48f504972a4bfe5c5c76abd180053eccb0b169",
+        "snapshot_coverage": {
+          "exchange_calendar": "verified",
+          "etf_raw_bars": "verified",
+          "etf_actions": "verified",
+          "etf_limits": "verified"
+        },
+        "symbols": [
+          "510050",
+          "510300",
+          "510500",
+          "510880"
+        ],
+        "static_relationships_are_legacy_priors": true,
+        "first_market_day": "2015-01-05",
+        "last_market_day": "2022-01-04",
+        "calendar_rows": 1706,
+        "bar_rows": 6824,
+        "actions_rows": 21,
+        "last_known_ex_date": "2021-11-29",
+        "prior_read_through": "2016-07-01"
+      }
+    },
+    {
+      "cutoff": "2022-06-30",
+      "sessions": 117,
+      "mature_panel_rows": 1762,
+      "training_rows": 1415,
+      "calibration_rows": 209,
+      "max_abs_difference": {
+        "adaptive": 0.0,
+        "uncertainty": 0.0,
+        "vol_feats": 0.0,
+        "hmm_cap": 0.0
+      },
+      "rank_order_equal": true,
+      "market": {
+        "snapshot": "research_v1/artifacts/market-etf-verified-20261108",
+        "snapshot_manifest_sha256": "6227df4d2415ae88faa8bc5fca48f504972a4bfe5c5c76abd180053eccb0b169",
+        "snapshot_coverage": {
+          "exchange_calendar": "verified",
+          "etf_raw_bars": "verified",
+          "etf_actions": "verified",
+          "etf_limits": "verified"
+        },
+        "symbols": [
+          "510050",
+          "510300",
+          "510500",
+          "510880"
+        ],
+        "static_relationships_are_legacy_priors": true,
+        "first_market_day": "2015-01-05",
+        "last_market_day": "2022-06-30",
+        "calendar_rows": 1822,
+        "bar_rows": 7288,
+        "actions_rows": 23,
+        "last_known_ex_date": "2022-01-19",
+        "prior_read_through": "2016-07-01"
+      }
+    }
+  ],
+  "market": {
+    "snapshot": "research_v1/artifacts/market-etf-verified-20261108",
+    "snapshot_manifest_sha256": "6227df4d2415ae88faa8bc5fca48f504972a4bfe5c5c76abd180053eccb0b169",
+    "snapshot_coverage": {
+      "exchange_calendar": "verified",
+      "etf_raw_bars": "verified",
+      "etf_actions": "verified",
+      "etf_limits": "verified"
+    },
+    "symbols": [
+      "510050",
+      "510300",
+      "510500",
+      "510880"
+    ],
+    "static_relationships_are_legacy_priors": true,
+    "first_market_day": "2015-01-05",
+    "last_market_day": "2022-12-30",
+    "calendar_rows": 1947,
+    "bar_rows": 7788,
+    "actions_rows": 25,
+    "last_known_ex_date": "2022-12-01",
+    "prior_read_through": "2016-07-01"
+  },
+  "prior_archive_sessions": 730,
+  "prior_2019_2021_retained_exact": true,
+  "prior_retraining_max_abs_difference": {
+    "adaptive": 0.0,
+    "uncertainty": 0.0,
+    "vol_feats": 0.0,
+    "hmm_cap": 0.0
+  },
+  "fully_mature_panel_rows": 1887,
+  "unlabeled_tail": 21,
+  "rows": 972,
+  "symbols": [
+    "510050",
+    "510300",
+    "510500",
+    "510880"
+  ],
+  "epochs": 10,
+  "calibration_raw_sessions": 230,
+  "inputs": {
+    "artifacts/etf-close-carry-2022-20261127/protocol.md": "59dbb652fa3b7a45a9b3f257de27b50a01ea6c34695f68bba81fb9b9e35ec268",
+    "artifacts/etf-close-carry-2022-20261127/forecast_2022.py": "f24006db55717ea477f94d33b3799165d665efbd4ccbf9414e50bf51c40cfd3e",
+    "artifacts/etf-causal-inputs-20261127/prefix_audit.py": "e796850b2a92348abdcc598ec608d1efbd09be69eccd80354eeaf9301fd36600",
+    "artifacts/etf-causal-inputs-20261127/annual_caps.py": "684fc7485789bb23e8bc20a28e4c68efa5cd5b6e760ce4423bb07b6ac3e9a106",
+    "artifacts/etf-causal-inputs-20261127/replay_frozen.py": "6379aa9a5dfc4df01c0c805b61740bb54f5d067c6f87cc05876277efd64b9669",
+    "artifacts/etf-annual-expert-20261126/forecasts.py": "db819e00f773a5ae6b2cd270541cc3c577271383edd509606787974fe374711e",
+    "artifacts/etf-annual-expert-20261126/forecasts.npz": "20edaf08c5d720c03338a3286b0238d3c762de0ff027d04ce5925d176efff5ca",
+    "artifacts/etf-annual-expert-20261126/forecast_meta.json": "ba470068fc596639744f4e19a5e88783e446440078debcd2a8d307801ff1bb95"
+  },
+  "frozen_materialization_manifest": "612c5af6b5c924f04aed9e04d1cc2a620ffe95a353a323a3fb8c8b7cc260a826",
+  "versions": {
+    "numpy": "2.5.4",
+    "pandas": "3.1.1",
+    "scikit-learn": "1.9.1",
+    "torch": "2.15.0",
+    "scipy": "1.18.1",
+    "duckdb": "2.0.0"
+  },
+  "array_sha256": {
+    "symbols": "bd693d4a115a04f3852df2b18a7afb86868fe27f7d742b78e973ab9d65e482a8",
+    "dates": "c1745a561a60a9e5610f0f86eb9a216f4adf531b0107d5ffe8d6c83976ba06ce",
+    "adaptive": "1347d757a5cbe32c747a8db50c07fc0649e7757e843b02c9118243e158035558",
+    "uncertainty": "5f89a152340710176550c8bfcee590a0bf9b63d3c403baba6a6a218a7d4a1d64",
+    "vol_feats": "923616350c9ad63d024e0b758d25de390860b9a4a68979a65ca127bf923de6d8",
+    "hmm_cap": "4d2c705ad3eca9f9459b32e4a42331b8ebb730e30ce20b9e364b1b95fb1b7fa3"
+  },
+  "npz_sha256": "31a6b35c48633a1ec8c8f7756fa2d30bc83872be4282c4d5d283c9525fe6dd6c"
+}
